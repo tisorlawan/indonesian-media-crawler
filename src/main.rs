@@ -216,18 +216,16 @@ async fn run_scrapper() {
     let detik_scrapper = Arc::new(DetikScraper {});
 
     while let Some(url) = rx.recv().await {
+        let url = url.trim().to_string();
         let skip = is_handled(&conn, url.clone()).await;
-        if skip {
-            delete_from_queue(&conn, url.clone()).await;
-            continue;
+        if !skip {
+            tokio::spawn(handle(
+                tx.clone(),
+                url.clone(),
+                detik_scrapper.clone(),
+                conn.clone(),
+            ));
         }
-
-        tokio::spawn(handle(
-            tx.clone(),
-            url.clone(),
-            detik_scrapper.clone(),
-            conn.clone(),
-        ));
     }
 }
 
@@ -263,6 +261,9 @@ async fn handle(
         result
     };
 
+    insert_to_handled(&conn, url.clone()).await;
+    delete_from_queue(&conn, url.clone()).await;
+
     match result {
         ScrapingResult::Links(links) => {
             for link in links.iter() {
@@ -285,8 +286,6 @@ async fn handle(
             }
         }
     };
-    insert_to_handled(&conn, url.clone()).await;
-    delete_from_queue(&conn, url).await;
 }
 
 #[tokio::main]
@@ -310,10 +309,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // // let url = "https://www.detik.com/hikmah";
     // // let url = "https://finance.detik.com/berita-ekonomi-bisnis/d-6454399/dirjen-pajak-buka-bukaan-ada-pegawainya-hidup-serumah-tanpa-menikah";
     // // let url = "https://www.detik.com/";
+    // // let url = "https://inet.detik.com/cyberlife/d-6453192/bos-kripto-yang-bangkrut-ngeles-soal-hobi-beli-rumah-mewah";
     // // let html = reqwest::get(url).await?.text().await.unwrap();
     // // println!("{}", html);
     //
-    // let html = std::fs::read_to_string("tests/htmls/4.html").expect("Invalid file path");
+    // let html = std::fs::read_to_string("tests/htmls/inet.html").expect("Invalid file path");
     // let doc = Html::parse_document(&html);
     //
     // let result = detik_scrapper.scrap(&doc);

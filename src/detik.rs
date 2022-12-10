@@ -73,7 +73,9 @@ lazy_static! {
     static ref KEYWORDS: Selector = Selector::parse(r#"meta[name="dtk:keywords"]"#).expect(E);
     static ref BODY1: Selector =
         Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#).expect(E);
-    static ref BODY2: Selector = Selector::parse(r#"div[class="detail_text"]"#).expect(E);
+    static ref BODY_SPORT: Selector = Selector::parse(r#"div[class="detail_text"]"#).expect(E);
+    static ref BODY_INET: Selector =
+        Selector::parse(r#"div[class="itp_bodycontent detail__body-text"]"#).expect(E);
     static ref P: Selector = Selector::parse("p").expect(E);
     static ref A: Selector = Selector::parse("a").expect(E);
 }
@@ -176,7 +178,11 @@ impl Scraper for DetikScraper {
             .unwrap_or_default();
 
         let mut paragraphs = vec![];
-        for el in doc.select(&BODY1).chain(doc.select(&BODY2)) {
+        for el in doc
+            .select(&BODY1)
+            .chain(doc.select(&BODY_SPORT))
+            .chain(doc.select(&BODY_INET))
+        {
             let raw_paragraphs = el.select(&P);
             for p in raw_paragraphs {
                 if p.value().attr("style").is_none() {
