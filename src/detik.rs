@@ -71,8 +71,9 @@ lazy_static! {
     static ref THUMBNAIL: Selector = Selector::parse(r#"meta[name="thumbnailUrl"]"#).expect(E);
     static ref AUTHOR: Selector = Selector::parse(r#"meta[name="dtk:author"]"#).expect(E);
     static ref KEYWORDS: Selector = Selector::parse(r#"meta[name="dtk:keywords"]"#).expect(E);
-    static ref TEXT: Selector =
+    static ref BODY1: Selector =
         Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#).expect(E);
+    static ref BODY2: Selector = Selector::parse(r#"div[class="detail_text"]"#).expect(E);
     static ref P: Selector = Selector::parse("p").expect(E);
     static ref A: Selector = Selector::parse("a").expect(E);
 }
@@ -175,7 +176,7 @@ impl Scraper for DetikScraper {
             .unwrap_or_default();
 
         let mut paragraphs = vec![];
-        for el in doc.select(&TEXT) {
+        for el in doc.select(&BODY1).chain(doc.select(&BODY2)) {
             let raw_paragraphs = el.select(&P);
             for p in raw_paragraphs {
                 if p.value().attr("style").is_none() {
@@ -191,7 +192,10 @@ impl Scraper for DetikScraper {
                     let p = regex!(r"(<em>|</em>)").replace_all(p.borrow(), "");
                     let p = regex!(r"<br>").replace_all(p.borrow(), "\n");
                     let p = regex!(r"<a.*?>(?P<text>.*?)</a>").replace_all(p.borrow(), "${text}");
-                    paragraphs.push(p.into_owned().trim_start_matches('\n').to_string());
+                    let p = p.into_owned().trim_start_matches('\n').trim().to_string();
+                    if !p.is_empty() {
+                        paragraphs.push(p);
+                    }
                 }
             }
         }
@@ -263,7 +267,6 @@ mod tests {
                 r#""(Terduga) pelakunya masih penyelidikan, belum (diketahui pistol beneran atau replika), karena kita harus berhasil dulu mengidentifikasi," ujar Widya."#.to_string(),
                 "Sebagai informasi, dalam video yang beredar, pria berkemeja biru muda tampak berusaha menyerang pria yang mengenakan sweater putih. Pria berkemeja biru muda itu juga terlihat memukul wajah pria sweater putih tersebut.".to_string(),
                 "Sebelumnya, sebuah video yang memperlihatkan percekcokan dua orang pria di Cipulir, Kebayoran Lama, Jakarta Selatan (Jaksel), viral di media sosial. Salah satu pria berkemeja biru muda dalam video itu dinarasikan membawa pistol.".to_string(),
-                "".to_string(),
                 "Dalam video yang beredar, pria berkemeja biru muda tampak cekcok dengan pria yang mengenakan sweater putih. Warga tampak berkerumun melihat keributan tersebut.".to_string(),
                 "Pria berbaju biru muda itu tampak berusaha menyerang pria berbaju putih. Dia juga sempat menampar wajah pria baju putih tersebut.".to_string(),
                 "Kemudian, seorang satpam mencoba melerai keributan tersebut. Pria berbaju biru muda itu dinarasikan membawa pistol hingga sempat menodongkan pistol tersebut.".to_string(),

@@ -6,7 +6,7 @@ use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Sender};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_error::ErrorLayer;
 use tracing_subscriber::prelude::*;
 
@@ -273,6 +273,9 @@ async fn handle(
             for link in links.iter() {
                 insert_to_queue(&conn, link.clone()).await;
             }
+            if doc.paragraphs.is_empty() {
+                warn!("Empty document extracted: {}", url);
+            }
             insert_result(&conn, url.clone(), doc).await;
             for link in links {
                 tx.send(link.to_owned()).await.unwrap();
@@ -298,13 +301,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let detik_scrapper = DetikScraper {};
     run_scrapper().await;
 
-    // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
-    // let url = "https://www.detik.com/hikmah";
-    // let url = "https://finance.detik.com/berita-ekonomi-bisnis/d-6454399/dirjen-pajak-buka-bukaan-ada-pegawainya-hidup-serumah-tanpa-menikah";
-    // let url = "https://www.detik.com/";
-    // let html = reqwest::get(url).await?.text().await?;
+    // let detik_scrapper = DetikScraper {};
+    // // let url = "https://sport.detik.com/aboutthegame/detik-insider/d-5746542/para-peracik-bola-mati";
+    // // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
+    // // let url = "https://www.detik.com/hikmah";
+    // // let url = "https://finance.detik.com/berita-ekonomi-bisnis/d-6454399/dirjen-pajak-buka-bukaan-ada-pegawainya-hidup-serumah-tanpa-menikah";
+    // // let url = "https://www.detik.com/";
+    // // let html = reqwest::get(url).await?.text().await.unwrap();
     // // println!("{}", html);
-    // // let html = std::fs::read_to_string("tests/htmls/1.html").expect("Invalid file path");
+    //
+    // let html = std::fs::read_to_string("tests/htmls/4.html").expect("Invalid file path");
     // let doc = Html::parse_document(&html);
     //
     // let result = detik_scrapper.scrap(&doc);
@@ -318,11 +324,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     }
     //     ScrapingResult::DocumentAndLinks(doc, links) => {
     //         println!("{}", doc);
-    //         println!("==== LINKS ====");
-    //         for link in links {
-    //             println!("{}", link);
-    //         }
-    //         println!("==== LINKS + DOC ====");
+    //         // println!("==== LINKS ====");
+    //         // for link in links {
+    //         //     println!("{}", link);
+    //         // }
+    //         // println!("==== LINKS + DOC ====");
     //     }
     // };
     Ok(())
