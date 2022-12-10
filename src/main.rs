@@ -13,6 +13,7 @@ use tracing_subscriber::prelude::*;
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::new(None);
     static ref REQUEST_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(500);
+    static ref EXTRACTED: tokio::sync::Mutex<u64> = tokio::sync::Mutex::new(0);
 }
 
 async fn is_table_exists(conn: &Object, table_name: &'static str) -> bool {
@@ -28,7 +29,7 @@ async fn is_table_exists(conn: &Object, table_name: &'static str) -> bool {
 }
 
 async fn create_result_table(conn: &Object) {
-    info!("Initialize table result");
+    debug!("Initialize table result");
     conn.interact(|conn| {
         let result = conn.execute(
             r#"CREATE TABLE results (
@@ -53,7 +54,9 @@ async fn create_result_table(conn: &Object) {
 }
 
 async fn insert_result(conn: &Object, url: String, doc: DetikArticle) {
-    info!("Insert result {}", url);
+    let mut num = EXTRACTED.lock().await;
+    info!("[{}] Insert result {}", num, url);
+    *num += 1;
     conn.interact(move |conn| {
         let result = conn.execute("INSERT INTO results (url, title, published_date, description, thumbnail_url, author, keywords, paragraphs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
             url,
