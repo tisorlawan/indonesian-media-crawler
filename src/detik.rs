@@ -58,25 +58,23 @@ impl fmt::Display for DetikArticle {
     }
 }
 
+const E: &'static str = "Invalid selector";
 lazy_static! {
     static ref CONTENT_TYPE_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:contenttype]"#).expect("Invalid selector");
-    static ref TITLE_SELECTOR: Selector =
-        Selector::parse(r#"meta[property="og:title"]"#).expect("Invalid selector");
+        Selector::parse(r#"meta[name="dtk:contenttype]"#).expect(E);
+    static ref TITLE_SELECTOR: Selector = Selector::parse(r#"meta[property="og:title"]"#).expect(E);
     static ref DESCRIPTION_SELECTOR: Selector =
-        Selector::parse(r#"meta[property="og:description"]"#).expect("Invalid selector");
+        Selector::parse(r#"meta[property="og:description"]"#).expect(E);
     static ref PUBLISH_DATE_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:publishdate"]"#).expect("Invalid selector");
+        Selector::parse(r#"meta[name="dtk:publishdate"]"#).expect(E);
     static ref THUMBNAIL_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="thumbnailUrl"]"#).expect("Invalid selector");
-    static ref AUTHOR_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:author"]"#).expect("Invalid selector");
+        Selector::parse(r#"meta[name="thumbnailUrl"]"#).expect(E);
+    static ref AUTHOR_SELECTOR: Selector = Selector::parse(r#"meta[name="dtk:author"]"#).expect(E);
     static ref KEYWORDS_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:keywords"]"#).expect("Invalid selector");
+        Selector::parse(r#"meta[name="dtk:keywords"]"#).expect(E);
     static ref TEXT_SELECTOR: Selector =
-        Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#)
-            .expect("Invalid selector");
-    static ref P_SELECTOR: Selector = Selector::parse("p").expect("Invalid selector");
+        Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#).expect(E);
+    static ref P_SELECTOR: Selector = Selector::parse("p").expect(E);
 }
 
 #[derive(Debug)]
