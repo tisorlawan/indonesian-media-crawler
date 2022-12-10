@@ -1,5 +1,6 @@
 use crate::scraper::{Scraper, ScrapingResult};
 use chrono::{DateTime, FixedOffset};
+use itertools::Itertools;
 use lazy_regex::regex;
 use lazy_static::lazy_static;
 use scraper::{Html, Selector};
@@ -60,7 +61,8 @@ impl fmt::Display for DetikArticle {
 
 const E: &'static str = "Invalid selector";
 lazy_static! {
-    static ref CONTENT_TYPE: Selector = Selector::parse(r#"meta[name="dtk:contenttype]"#).expect(E);
+    static ref CONTENT_TYPE: Selector =
+        Selector::parse(r#"meta[name="dtk:contenttype"]"#).expect(E);
     static ref TITLE: Selector = Selector::parse(r#"meta[property="og:title"]"#).expect(E);
     static ref DESCRIPTION: Selector =
         Selector::parse(r#"meta[property="og:description"]"#).expect(E);
@@ -72,6 +74,7 @@ lazy_static! {
     static ref TEXT: Selector =
         Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#).expect(E);
     static ref P: Selector = Selector::parse("p").expect(E);
+    static ref A: Selector = Selector::parse("a").expect(E);
 }
 
 #[derive(Debug)]
@@ -88,7 +91,41 @@ impl Scraper for DetikScraper {
         }
     }
 
+    fn scrap_links(&self, doc: &Html) -> Vec<String> {
+        doc.select(&A)
+            .into_iter()
+            .filter_map(|a| a.value().attr("href"))
+            .map(|a| a.trim())
+            .filter(|l| {
+                !l.is_empty()
+                    && !l.starts_with("#")
+                    && l.contains("detik.com")
+                    && l.starts_with("https://")
+            })
+            .filter_map(|s| match reqwest::Url::parse(s).ok() {
+                Some(url) => url.host().and_then(|host| {
+                    if host.to_string().contains("detik.com") {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }),
+                None => None,
+            })
+            .map(|s| s.trim_end_matches("/"))
+            .sorted()
+            .dedup()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document> {
+        let links = self.scrap_links(&doc);
+
+        if !self.can_be_scrapped(doc) {
+            return ScrapingResult::Links(links);
+        }
+
         let title = doc
             .select(&TITLE)
             .next()
@@ -172,7 +209,7 @@ impl Scraper for DetikScraper {
             keywords,
             paragraphs,
         };
-        ScrapingResult::DocumentAndLinks(detik_article, vec![])
+        ScrapingResult::DocumentAndLinks(detik_article, links)
     }
 }
 

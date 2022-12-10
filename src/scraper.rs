@@ -10,4 +10,5 @@ pub trait Scraper {
 
     fn can_be_scrapped(&self, doc: &Html) -> bool;
     fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document>;
+    fn scrap_links(&self, doc: &Html) -> Vec<String>;
 }
