@@ -6,6 +6,9 @@ use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Sender};
+use tracing::{debug, error, info};
+use tracing_error::ErrorLayer;
+use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::new(None);
@@ -25,7 +28,7 @@ async fn is_table_exists(conn: &Object, table_name: &'static str) -> bool {
 }
 
 async fn create_result_table(conn: &Object) {
-    println!("Initialize table result");
+    info!("Initialize table result");
     conn.interact(|conn| {
         let result = conn.execute(
             r#"CREATE TABLE results (
@@ -41,8 +44,8 @@ async fn create_result_table(conn: &Object) {
             (),
         );
         match result {
-            Ok(n) => println!("Status: {}", n),
-            Err(e) => println!("Error creating result table: {}", e),
+            Ok(n) => debug!("Create result table: {}", n),
+            Err(e) => error!("Error creating result table: {}", e),
         };
     })
     .await
@@ -50,7 +53,7 @@ async fn create_result_table(conn: &Object) {
 }
 
 async fn insert_result(conn: &Object, url: String, doc: DetikArticle) {
-    println!("Insert result {}", url);
+    info!("Insert result {}", url);
     conn.interact(move |conn| {
         let result = conn.execute("INSERT INTO results (url, title, published_date, description, thumbnail_url, author, keywords, paragraphs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
             url,
@@ -68,7 +71,7 @@ async fn insert_result(conn: &Object, url: String, doc: DetikArticle) {
 }
 
 async fn create_queue_table(conn: &Object, initial_queue: Vec<&'static str>) {
-    println!("Initialize table queue");
+    debug!("Initialize table queue");
     conn.interact(|conn| {
         let result = conn.execute(
             r#"CREATE TABLE queue (
@@ -77,8 +80,8 @@ async fn create_queue_table(conn: &Object, initial_queue: Vec<&'static str>) {
             (),
         );
         match result {
-            Ok(n) => println!("Status: {}", n),
-            Err(e) => println!("Error creating queue table: {}", e),
+            Ok(n) => debug!("Status: {}", n),
+            Err(e) => error!("Error creating queue table: {}", e),
         };
     })
     .await
@@ -113,7 +116,7 @@ async fn delete_from_queue(conn: &Object, item: String) {
         let result = conn.execute("DELETE FROM queue WHERE url=?", (item,));
         match result {
             Ok(n) => {}
-            Err(e) => println!("Error delete queue: {}", e),
+            Err(e) => error!("Error delete queue: {}", e),
         };
     })
     .await
@@ -126,7 +129,7 @@ async fn insert_to_queue(conn: &Object, item: String) {
         match result {
             Ok(n) => {}
             Err(rusqlite::Error::SqliteFailure(e, Some(s))) => if s.contains("UNIQUE") {},
-            Err(e) => println!("Error insert queue item: {}", e),
+            Err(e) => error!("Error insert queue item: {}", e),
         };
     })
     .await
@@ -134,7 +137,7 @@ async fn insert_to_queue(conn: &Object, item: String) {
 }
 
 async fn create_handled_table(conn: &Object) {
-    println!("Initialize table queue");
+    debug!("Initialize table queue");
     conn.interact(|conn| {
         let result = conn.execute(
             r#"CREATE TABLE handled (
@@ -143,8 +146,8 @@ async fn create_handled_table(conn: &Object) {
             (),
         );
         match result {
-            Ok(n) => println!("Status: {}", n),
-            Err(e) => println!("Error creating handled table: {}", e),
+            Ok(n) => debug!("Status: {}", n),
+            Err(e) => error!("Error creating handled table: {}", e),
         };
     })
     .await
@@ -157,7 +160,7 @@ async fn insert_to_handled(conn: &Object, item: String) {
         match result {
             Ok(n) => {}
             Err(rusqlite::Error::SqliteFailure(e, Some(s))) => if s.contains("UNIQUE") {},
-            Err(e) => println!("Error insert handled item: {}", e),
+            Err(e) => error!("Error insert handled item: {}", e),
         };
     })
     .await
@@ -241,13 +244,15 @@ async fn handle(
         }
     }
 
-    println!("GET TASK {}", url);
+    debug!("Get Task {}", url);
     let html = reqwest::get::<&str>(url.as_str())
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
+
+    last_request_mutex.replace(now);
 
     let result = {
         let doc = Html::parse_document(&html);
@@ -280,8 +285,17 @@ async fn handle(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let detik_scrapper = DetikScraper {};
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_env("LOG_LEVEL").unwrap_or_else(|_| {
+                "debug,html5ever=error,selectors=error,hyper=warn,reqwest=info".into()
+            }),
+        )
+        .with(ErrorLayer::default())
+        .init();
 
+    let detik_scrapper = DetikScraper {};
     run_scrapper().await;
 
     // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
