@@ -521,7 +521,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "indonesian-news-scrapper"
+name = "indonesian-news-scraper"
 version = "0.1.0"
 dependencies = [
  "chrono",

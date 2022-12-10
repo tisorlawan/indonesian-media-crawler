@@ -1,4 +1,4 @@
-use crate::scrapper::Scrapper;
+use crate::scraper::Scraper;
 use chrono::{DateTime, FixedOffset};
 use lazy_regex::regex;
 use lazy_static::lazy_static;
@@ -80,8 +80,8 @@ lazy_static! {
 }
 
 #[derive(Debug)]
-pub struct DetikScrapper {}
-impl Scrapper for DetikScrapper {
+pub struct DetikScraper {}
+impl Scraper for DetikScraper {
     type Document = DetikArticle;
 
     fn can_be_scrapped(&self, doc: &Html) -> bool {

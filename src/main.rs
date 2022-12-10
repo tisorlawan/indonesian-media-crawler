@@ -1,10 +1,10 @@
-use indonesian_news_scrapper::detik::DetikScrapper;
-use indonesian_news_scrapper::scrapper::Scrapper;
+use indonesian_news_scraper::detik::DetikScraper;
+use indonesian_news_scraper::scraper::Scraper;
 use scraper::Html;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let detik_scrapper = DetikScrapper {};
+    let detik_scrapper = DetikScraper {};
 
     // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
     // let url = "https://www.detik.com/hikmah";

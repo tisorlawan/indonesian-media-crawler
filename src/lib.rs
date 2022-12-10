@@ -1,2 +1,2 @@
 pub mod detik;
-pub mod scrapper;
+pub mod scraper;
