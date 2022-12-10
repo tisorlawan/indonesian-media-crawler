@@ -1,4 +1,4 @@
-use crate::scraper::Scraper;
+use crate::scraper::{Scraper, ScrapingResult};
 use chrono::{DateTime, FixedOffset};
 use lazy_regex::regex;
 use lazy_static::lazy_static;
@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::string::String;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DetikArticle {
     pub title: Option<String>,
     pub published_date: Option<DateTime<FixedOffset>>,
@@ -60,21 +60,18 @@ impl fmt::Display for DetikArticle {
 
 const E: &'static str = "Invalid selector";
 lazy_static! {
-    static ref CONTENT_TYPE_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:contenttype]"#).expect(E);
-    static ref TITLE_SELECTOR: Selector = Selector::parse(r#"meta[property="og:title"]"#).expect(E);
-    static ref DESCRIPTION_SELECTOR: Selector =
+    static ref CONTENT_TYPE: Selector = Selector::parse(r#"meta[name="dtk:contenttype]"#).expect(E);
+    static ref TITLE: Selector = Selector::parse(r#"meta[property="og:title"]"#).expect(E);
+    static ref DESCRIPTION: Selector =
         Selector::parse(r#"meta[property="og:description"]"#).expect(E);
-    static ref PUBLISH_DATE_SELECTOR: Selector =
+    static ref PUBLISH_DATE: Selector =
         Selector::parse(r#"meta[name="dtk:publishdate"]"#).expect(E);
-    static ref THUMBNAIL_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="thumbnailUrl"]"#).expect(E);
-    static ref AUTHOR_SELECTOR: Selector = Selector::parse(r#"meta[name="dtk:author"]"#).expect(E);
-    static ref KEYWORDS_SELECTOR: Selector =
-        Selector::parse(r#"meta[name="dtk:keywords"]"#).expect(E);
-    static ref TEXT_SELECTOR: Selector =
+    static ref THUMBNAIL: Selector = Selector::parse(r#"meta[name="thumbnailUrl"]"#).expect(E);
+    static ref AUTHOR: Selector = Selector::parse(r#"meta[name="dtk:author"]"#).expect(E);
+    static ref KEYWORDS: Selector = Selector::parse(r#"meta[name="dtk:keywords"]"#).expect(E);
+    static ref TEXT: Selector =
         Selector::parse(r#"div[class="detail__body-text itp_bodycontent"]"#).expect(E);
-    static ref P_SELECTOR: Selector = Selector::parse("p").expect(E);
+    static ref P: Selector = Selector::parse("p").expect(E);
 }
 
 #[derive(Debug)]
@@ -83,7 +80,7 @@ impl Scraper for DetikScraper {
     type Document = DetikArticle;
 
     fn can_be_scrapped(&self, doc: &Html) -> bool {
-        match doc.select(&CONTENT_TYPE_SELECTOR).next() {
+        match doc.select(&CONTENT_TYPE).next() {
             Some(content_type) => {
                 matches!(content_type.value().attr("content"), Some("singlepagenews"))
             }
@@ -91,21 +88,21 @@ impl Scraper for DetikScraper {
         }
     }
 
-    fn scrap(&self, doc: &Html) -> (Option<Self::Document>, Vec<String>) {
+    fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document> {
         let title = doc
-            .select(&TITLE_SELECTOR)
+            .select(&TITLE)
             .next()
             .and_then(|el| el.value().attr("content"))
             .map(ToString::to_string);
 
         let description = doc
-            .select(&DESCRIPTION_SELECTOR)
+            .select(&DESCRIPTION)
             .next()
             .and_then(|el| el.value().attr("content"))
             .map(ToString::to_string);
 
         let published_date = doc
-            .select(&PUBLISH_DATE_SELECTOR)
+            .select(&PUBLISH_DATE)
             .next()
             .and_then(|el| el.value().attr("content"))
             .and_then(|published_date| {
@@ -117,19 +114,19 @@ impl Scraper for DetikScraper {
             });
 
         let thumbnail_url = doc
-            .select(&THUMBNAIL_SELECTOR)
+            .select(&THUMBNAIL)
             .next()
             .and_then(|el| el.value().attr("content"))
             .map(ToString::to_string);
 
         let author = doc
-            .select(&AUTHOR_SELECTOR)
+            .select(&AUTHOR)
             .next()
             .and_then(|el| el.value().attr("content"))
             .map(ToString::to_string);
 
         let keywords = doc
-            .select(&KEYWORDS_SELECTOR)
+            .select(&KEYWORDS)
             .next()
             .and_then(|el| {
                 el.value().attr("content").map(|s| {
@@ -141,8 +138,8 @@ impl Scraper for DetikScraper {
             .unwrap_or_default();
 
         let mut paragraphs = vec![];
-        for el in doc.select(&TEXT_SELECTOR) {
-            let raw_paragraphs = el.select(&P_SELECTOR);
+        for el in doc.select(&TEXT) {
+            let raw_paragraphs = el.select(&P);
             for p in raw_paragraphs {
                 if p.value().attr("style").is_none() {
                     let p = p.inner_html().trim().replace('\n', " ");
@@ -175,6 +172,68 @@ impl Scraper for DetikScraper {
             keywords,
             paragraphs,
         };
-        (Some(detik_article), vec![])
+        ScrapingResult::DocumentAndLinks(detik_article, vec![])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scraper::Scraper;
+    use pretty_assertions::assert_eq;
+    use scraper::html::Html;
+    use std::fs;
+
+    #[test]
+    fn test_parsing_document_and_links() {
+        let s = DetikScraper {};
+        let html = fs::read_to_string("tests/htmls/1.html").expect("Invalid file url");
+        let html = Html::parse_document(&html);
+
+        let res = s.scrap(&html);
+        assert!(matches!(&res, ScrapingResult::DocumentAndLinks(_, _)));
+
+        let ScrapingResult::DocumentAndLinks(extracted_doc, _) = res else {
+            unreachable!()
+        };
+
+        let doc = DetikArticle {
+            title: Some(
+                "Polisi soal Pistol di Kasus Cekcok Pemobil vs Pemotor: Cuma Diperlihatkan"
+                    .to_string(),
+            ),
+            published_date: Some(
+                DateTime::parse_from_str("2022/12/10 13:19:56 +0700", "%Y/%m/%d %H:%M:%S %z")
+                    .expect("Invalid date format"),
+            ),
+            description: Some("Polisi menjelaskan soal pistol yang dibawa pengemudi mobil yang cekcok dengan pemotor di Jaksel. Pistol itu tak ditodongkan, hanya diperlihatkan.".to_string()),
+            thumbnail_url: Some("https://akcdn.detik.net.id/community/media/visual/2020/03/05/043c2d4e-732c-4ff2-8922-32d98c0f0a7e_169.jpeg?w=650".to_string()),
+            author: Some("Mulia Budi".to_string()),
+            keywords: vec![
+                "pria berpistol".to_string(),
+                "cekcok".to_string(),
+                "cekcok di jalan".to_string(),
+                "viral".to_string(),
+                "polsek kebayoran lama".to_string(),
+                "jabodetabek".to_string()
+            ],
+            paragraphs: vec![
+                "Polisi masih mendalami percekcokan antara pemotor dan pemobil yang dinarasikan membawa pistol di Cipulir, Kabayoran Lama, Jakarta Selatan (Jaksel). Korban atau pemotor pria berinisial CE, telah membuat laporan terkait kejadian itu.".to_string(),
+                r#""Korbanya kita dampingi buat laporan, korbannya, kemarin. Kemarin kita dampingi untuk buat laporan, terus diambil keterangannya terhadap kejadian waktu itu," kata Kapolsek Kabayoran Lama, Kompol Widya Agustiono saat dihubungi wartawan, Sabtu (10/12/2022)."#.to_string(),
+                "Widya mengatakan pemobil atau pria berkemeja biru muda dalam video tersebut menyimpan benda yang dicurigai merupakan pistol di pinggang. Dia menyebut pria itu tak mengacungkan benda menyerupai pistol itu pada CE.".to_string(),
+                r#""Kalau dari keterangannya (korban), dia (pria berkemeja biru) mengeluarkan, memperlihatkan, setelah itu ditaruh di pinggang, seperti itu. Kalau langsung mengacungkan, keterangannya belum ada," ujarnya."#.to_string(),
+                "Widya mengatakan pihaknya belum bisa memastikan apakah benda yang dibawa pelaku itu pistol asli atau hanya replika. Dia menegaskan polisi masih mengusut kasus tersebut.".to_string(),
+                r#""(Terduga) pelakunya masih penyelidikan, belum (diketahui pistol beneran atau replika), karena kita harus berhasil dulu mengidentifikasi," ujar Widya."#.to_string(),
+                "Sebagai informasi, dalam video yang beredar, pria berkemeja biru muda tampak berusaha menyerang pria yang mengenakan sweater putih. Pria berkemeja biru muda itu juga terlihat memukul wajah pria sweater putih tersebut.".to_string(),
+                "Sebelumnya, sebuah video yang memperlihatkan percekcokan dua orang pria di Cipulir, Kebayoran Lama, Jakarta Selatan (Jaksel), viral di media sosial. Salah satu pria berkemeja biru muda dalam video itu dinarasikan membawa pistol.".to_string(),
+                "".to_string(),
+                "Dalam video yang beredar, pria berkemeja biru muda tampak cekcok dengan pria yang mengenakan sweater putih. Warga tampak berkerumun melihat keributan tersebut.".to_string(),
+                "Pria berbaju biru muda itu tampak berusaha menyerang pria berbaju putih. Dia juga sempat menampar wajah pria baju putih tersebut.".to_string(),
+                "Kemudian, seorang satpam mencoba melerai keributan tersebut. Pria berbaju biru muda itu dinarasikan membawa pistol hingga sempat menodongkan pistol tersebut.".to_string(),
+                r#""Videoin...videoin..videoin, beceng..beceng...bawa beceng. Viralin...viralin, bawa beceng itu dia," kata perekam suara dalam video tersebut."#.to_string(),
+                "Peristiwa itu terjadi pada Rabu (7/12/2022) sekitar pukul 21.45 WIB. Disebut-sebut percekcokan itu terjadi antara pengemudi mobil dengan pengemudi motor.".to_string()
+            ],
+        };
+        assert_eq!(extracted_doc, doc);
     }
 }

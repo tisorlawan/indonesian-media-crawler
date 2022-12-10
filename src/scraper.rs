@@ -1,8 +1,13 @@
 use scraper::Html;
 
+pub enum ScrapingResult<T> {
+    Links(Vec<String>),
+    DocumentAndLinks(T, Vec<String>),
+}
+
 pub trait Scraper {
     type Document: std::fmt::Debug;
 
     fn can_be_scrapped(&self, doc: &Html) -> bool;
-    fn scrap(&self, doc: &Html) -> (Option<Self::Document>, Vec<String>);
+    fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document>;
 }
