@@ -1,12 +1,12 @@
 use crate::{crawler::detik::DetikArticle, error::CrawlerError};
 use chrono::{DateTime, FixedOffset};
-use futures::TryStreamExt;
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
-use tracing::debug;
+use tracing::{debug, info};
 
 enum Table {
     Queue(String),
     Result(String),
+    InProgress(String),
     Visited(String),
     Warned(String),
 }
@@ -15,6 +15,7 @@ impl Table {
         match self {
             Table::Queue(name)
             | Table::Result(name)
+            | Table::InProgress(name)
             | Table::Visited(name)
             | Table::Warned(name) => name,
         }
@@ -27,6 +28,7 @@ pub struct Persistent {
     visited_table: Table,
     warned_table: Table,
     result_table: Table,
+    in_progress_table: Table,
     pool: SqlitePool,
 }
 
@@ -39,6 +41,7 @@ impl Persistent {
         let p = Persistent {
             name: name.to_string(),
             queue_table: Table::Queue(format!("{}_queue", name)),
+            in_progress_table: Table::InProgress(format!("{}_in_progress", name)),
             visited_table: Table::Visited(format!("{}_visited", name)),
             warned_table: Table::Warned(format!("{}_warned", name)),
             result_table: Table::Result(format!("{}_results", name)),
@@ -47,6 +50,7 @@ impl Persistent {
 
         for table in &[
             &p.queue_table,
+            &p.in_progress_table,
             &p.visited_table,
             &p.warned_table,
             &p.result_table,
@@ -71,7 +75,7 @@ impl Persistent {
 
     async fn create_table(&self, table: &Table) -> Result<(), CrawlerError> {
         match table {
-            Table::Visited(t) | Table::Warned(t) | Table::Queue(t) => {
+            Table::Visited(t) | Table::Warned(t) | Table::Queue(t) | Table::InProgress(t) => {
                 let query = format!(
                     r#"
                         CREATE TABLE {} (
@@ -115,6 +119,7 @@ impl Persistent {
         timestamp: DateTime<FixedOffset>,
         table: &Table,
     ) -> Result<(), CrawlerError> {
+        let mut tx = self.pool.begin().await?;
         let query = format!(
             "INSERT OR IGNORE INTO {} (url, created_at) VALUES (?, ?)",
             table.get_name()
@@ -122,25 +127,32 @@ impl Persistent {
         sqlx::query(&query)
             .bind(url.as_ref())
             .bind(timestamp)
-            .execute(&self.pool)
+            .execute(&mut tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     pub async fn insert_queue<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
-        let timestamp = self.get_now();
+        let timestamp = get_now();
         self.insert_url_timestamp(url, timestamp, &self.queue_table)
             .await
     }
 
+    pub async fn insert_in_progress<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
+        let timestamp = get_now();
+        self.insert_url_timestamp(url, timestamp, &self.in_progress_table)
+            .await
+    }
+
     pub async fn insert_visited<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
-        let timestamp = self.get_now();
+        let timestamp = get_now();
         self.insert_url_timestamp(url, timestamp, &self.visited_table)
             .await
     }
 
     pub async fn insert_warned<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
-        let timestamp = self.get_now();
+        let timestamp = get_now();
         self.insert_url_timestamp(url, timestamp, &self.warned_table)
             .await
     }
@@ -150,6 +162,7 @@ impl Persistent {
         url: S,
         doc: DetikArticle,
     ) -> Result<(), CrawlerError> {
+        let mut tx = self.pool.begin().await?;
         let query = format!(
             r#"INSERT OR IGNORE INTO {} (
                 url, 
@@ -172,9 +185,10 @@ impl Persistent {
             .bind(doc.author)
             .bind(doc.keywords.join("|"))
             .bind(doc.paragraphs.join("\n"))
-            .bind(self.get_now())
-            .execute(&self.pool)
+            .bind(get_now())
+            .execute(&mut tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -199,6 +213,10 @@ impl Persistent {
         self.delete_by_url(url, &self.result_table).await
     }
 
+    pub async fn delete_in_progress<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
+        self.delete_by_url(url, &self.in_progress_table).await
+    }
+
     pub async fn delete_visited<S: AsRef<str>>(&self, url: S) -> Result<(), CrawlerError> {
         self.delete_by_url(url, &self.visited_table).await
     }
@@ -207,15 +225,41 @@ impl Persistent {
         self.delete_by_url(url, &self.warned_table).await
     }
 
-    pub async fn get_queue(&self) -> Result<Vec<String>, CrawlerError> {
+    pub async fn merge_queue_and_in_progress(&self) -> Result<Vec<String>, CrawlerError> {
         let mut urls: Vec<String> = vec![];
+
+        // Get queue
         let query = format!("SELECT url FROM {}", self.queue_table.get_name());
-        let mut rows = sqlx::query(&query).fetch(&self.pool);
-        while let Some(row) = rows.try_next().await? {
+        for row in sqlx::query(&query).fetch_all(&self.pool).await? {
             urls.push(row.try_get("url")?);
         }
 
+        // Get In Progress
+        let in_progress = self.get_in_progress().await?;
+
+        info!("Queued: {}", urls.len());
+        info!("In Progress: {}", in_progress.len());
+
+        // Delete in progress and add it to queued
+        for i in in_progress {
+            self.insert_queue(i.as_str()).await?;
+            self.delete_in_progress(i.as_str()).await?;
+            urls.push(i);
+        }
+
+        let in_progress = self.get_in_progress().await?;
+        debug!("In Progress after merge: {}", in_progress.len());
+
         Ok(urls)
+    }
+
+    async fn get_in_progress(&self) -> Result<Vec<String>, CrawlerError> {
+        let mut in_progress: Vec<String> = vec![];
+        let query = format!("SELECT url FROM {}", self.in_progress_table.get_name());
+        for row in sqlx::query(&query).fetch_all(&self.pool).await? {
+            in_progress.push(row.try_get("url")?);
+        }
+        Ok(in_progress)
     }
 
     pub async fn is_visited<S: AsRef<str>>(&self, url: S) -> Result<bool, CrawlerError> {
@@ -231,10 +275,23 @@ impl Persistent {
             .is_some())
     }
 
-    fn get_now(&self) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(
-            &chrono::offset::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        )
-        .unwrap()
+    pub async fn is_in_progress<S: AsRef<str>>(&self, url: S) -> Result<bool, CrawlerError> {
+        let query = format!(
+            "SELECT url FROM {} WHERE url = ?",
+            self.in_progress_table.get_name()
+        );
+
+        Ok(sqlx::query(&query)
+            .bind(url.as_ref().trim())
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
     }
+}
+
+fn get_now() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(
+        &chrono::offset::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
+    .unwrap()
 }

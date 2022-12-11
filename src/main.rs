@@ -1,7 +1,7 @@
 use indonesian_media_crawler::crawler::detik::DetikScraper;
+use indonesian_media_crawler::crawler::{Crawler, CrawlerResult};
 use indonesian_media_crawler::error::CrawlerError;
 use indonesian_media_crawler::persistent::Persistent;
-use indonesian_media_crawler::scraper::{Scraper, ScrapingResult};
 use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,7 +23,7 @@ lazy_static::lazy_static! {
 }
 
 async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), CrawlerError> {
-    let current_queue = p.get_queue().await?;
+    let current_queue = p.merge_queue_and_in_progress().await?;
 
     let queue = if current_queue.is_empty() {
         for q in &initial_queue {
@@ -34,9 +34,10 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
         current_queue
     };
 
-    let (tx, mut rx) = mpsc::channel(1);
+    let (tx, mut rx) = mpsc::channel(10);
 
     info!("Initial Queue Length: {}", queue.len());
+
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         for q in queue {
@@ -48,7 +49,9 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     let p = Arc::new(p);
     while let Some(url) = rx.recv().await {
-        if p.is_visited(url.as_ref()).await? {
+        if p.is_in_progress(url.as_str()).await? {
+            p.delete_queue(url.as_ref()).await?;
+        } else if p.is_visited(url.as_ref()).await? {
             p.delete_queue(url.as_ref()).await?;
         } else {
             tokio::spawn(handle(tx.clone(), url, detik_scrapper.clone(), p.clone()));
@@ -64,7 +67,8 @@ async fn handle(
     detik_scrapper: Arc<DetikScraper>,
     persistent: Arc<Persistent>,
 ) -> Result<(), CrawlerError> {
-    persistent.insert_visited(url.as_ref()).await?;
+    persistent.insert_in_progress(url.as_ref()).await?;
+    persistent.delete_queue(url.as_ref()).await?;
 
     let mut last_request_mutex = LAST_REQUEST_MUTEX.lock().await;
     let last_request = last_request_mutex.take();
@@ -88,11 +92,13 @@ async fn handle(
 
     let result = {
         let doc = Html::parse_document(&html);
-        detik_scrapper.scrap(&doc)
+        detik_scrapper.crawl(&doc)
     };
 
     match result {
-        ScrapingResult::Links(links) => {
+        CrawlerResult::Links(links) => {
+            persistent.insert_visited(url.as_ref()).await?;
+
             for link in &links {
                 persistent.insert_queue(link).await?;
             }
@@ -100,12 +106,15 @@ async fn handle(
                 tx.send(Arc::new(link)).await.unwrap();
             }
         }
-        ScrapingResult::DocumentAndLinks(doc, links) => {
+        CrawlerResult::DocumentAndLinks(doc, links) => {
             if doc.paragraphs.is_empty() {
                 warn!("\nEmpty document extracted: {}\n", url);
-                persistent.delete_visited(url.as_ref()).await?;
+                // We dont insert to visited if there is warning
                 persistent.insert_warned(url.as_ref()).await?;
             } else {
+                persistent.insert_result(url.as_ref(), doc).await?;
+                persistent.insert_visited(url.as_ref()).await?;
+
                 for link in &links {
                     persistent.insert_queue(link).await?;
                 }
@@ -113,7 +122,6 @@ async fn handle(
                 let mut num = EXTRACTED.lock().await;
                 info!("[{}] Insert Result", *num + 1);
                 *num += 1;
-                persistent.insert_result(url.as_ref(), doc).await?;
 
                 for link in links {
                     tx.send(Arc::new(link)).await.unwrap();
@@ -122,7 +130,7 @@ async fn handle(
         }
     };
 
-    persistent.delete_queue(url.as_ref()).await?;
+    persistent.delete_in_progress(url.as_ref()).await?;
     Ok(())
 }
 

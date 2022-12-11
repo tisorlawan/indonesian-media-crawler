@@ -1,4 +1,4 @@
-use crate::scraper::{Scraper, ScrapingResult};
+use crate::crawler::{Crawler, CrawlerResult};
 use chrono::{DateTime, FixedOffset};
 use itertools::Itertools;
 use lazy_regex::regex;
@@ -83,7 +83,7 @@ lazy_static! {
 
 #[derive(Debug)]
 pub struct DetikScraper {}
-impl Scraper for DetikScraper {
+impl Crawler for DetikScraper {
     type Document = DetikArticle;
 
     fn can_be_scrapped(&self, doc: &Html) -> bool {
@@ -95,7 +95,7 @@ impl Scraper for DetikScraper {
         }
     }
 
-    fn scrap_links(&self, doc: &Html) -> Vec<String> {
+    fn extract_links(&self, doc: &Html) -> Vec<String> {
         doc.select(&A)
             .into_iter()
             .filter_map(|a| a.value().attr("href"))
@@ -123,11 +123,11 @@ impl Scraper for DetikScraper {
             .collect()
     }
 
-    fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document> {
-        let links = self.scrap_links(doc);
+    fn crawl(&self, doc: &Html) -> CrawlerResult<Self::Document> {
+        let links = self.extract_links(doc);
 
         if !self.can_be_scrapped(doc) {
-            return ScrapingResult::Links(links);
+            return CrawlerResult::Links(links);
         }
 
         let title = doc
@@ -226,14 +226,14 @@ impl Scraper for DetikScraper {
             keywords,
             paragraphs,
         };
-        ScrapingResult::DocumentAndLinks(detik_article, links)
+        CrawlerResult::DocumentAndLinks(detik_article, links)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scraper::Scraper;
+    use crate::scraper::Crawler;
     use pretty_assertions::assert_eq;
     use scraper::html::Html;
     use std::fs;
@@ -244,10 +244,10 @@ mod tests {
         let html = fs::read_to_string("tests/htmls/1.html").expect("Invalid file url");
         let html = Html::parse_document(&html);
 
-        let res = s.scrap(&html);
-        assert!(matches!(&res, ScrapingResult::DocumentAndLinks(_, _)));
+        let res = s.crawl(&html);
+        assert!(matches!(&res, CrawlerResult::DocumentAndLinks(_, _)));
 
-        let ScrapingResult::DocumentAndLinks(extracted_doc, _) = res else {
+        let CrawlerResult::DocumentAndLinks(extracted_doc, _) = res else {
             unreachable!()
         };
 
