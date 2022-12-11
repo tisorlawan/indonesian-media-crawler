@@ -103,7 +103,9 @@ async fn handle(
                 persistent.insert_queue(link).await?;
             }
             for link in links {
-                tx.send(Arc::new(link)).await.unwrap();
+                if !persistent.is_visited(link.as_str()).await? {
+                    tx.send(Arc::new(link)).await.unwrap();
+                }
             }
         }
         CrawlerResult::DocumentAndLinks(doc, links) => {
@@ -124,7 +126,9 @@ async fn handle(
                 *num += 1;
 
                 for link in links {
-                    tx.send(Arc::new(link)).await.unwrap();
+                    if !persistent.is_visited(link.as_str()).await? {
+                        tx.send(Arc::new(link)).await.unwrap();
+                    }
                 }
             }
         }
