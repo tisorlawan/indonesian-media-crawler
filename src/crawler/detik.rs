@@ -59,7 +59,7 @@ impl fmt::Display for DetikArticle {
     }
 }
 
-const E: &'static str = "Invalid selector";
+const E: &str = "Invalid selector";
 lazy_static! {
     static ref CONTENT_TYPE: Selector =
         Selector::parse(r#"meta[name="dtk:contenttype"]"#).expect(E);
@@ -99,10 +99,10 @@ impl Scraper for DetikScraper {
         doc.select(&A)
             .into_iter()
             .filter_map(|a| a.value().attr("href"))
-            .map(|a| a.trim())
+            .map(str::trim)
             .filter(|l| {
                 !l.is_empty()
-                    && !l.starts_with("#")
+                    && !l.starts_with('#')
                     && l.contains("detik.com")
                     && l.starts_with("https://")
             })
@@ -116,7 +116,7 @@ impl Scraper for DetikScraper {
                 }),
                 None => None,
             })
-            .map(|s| s.trim_end_matches("/"))
+            .map(|s| s.trim_end_matches('/'))
             .sorted()
             .dedup()
             .map(ToString::to_string)
@@ -124,7 +124,7 @@ impl Scraper for DetikScraper {
     }
 
     fn scrap(&self, doc: &Html) -> ScrapingResult<Self::Document> {
-        let links = self.scrap_links(&doc);
+        let links = self.scrap_links(doc);
 
         if !self.can_be_scrapped(doc) {
             return ScrapingResult::Links(links);
