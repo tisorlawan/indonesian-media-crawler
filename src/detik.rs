@@ -76,6 +76,7 @@ lazy_static! {
     static ref BODY_SPORT: Selector = Selector::parse(r#"div[class="detail_text"]"#).expect(E);
     static ref BODY_INET: Selector =
         Selector::parse(r#"div[class="itp_bodycontent detail__body-text"]"#).expect(E);
+    static ref BODY_TRAVEL: Selector = Selector::parse(r#"div[id="detikdetailtext"]"#).expect(E);
     static ref P: Selector = Selector::parse("p").expect(E);
     static ref A: Selector = Selector::parse("a").expect(E);
 }
@@ -182,6 +183,7 @@ impl Scraper for DetikScraper {
             .select(&BODY1)
             .chain(doc.select(&BODY_SPORT))
             .chain(doc.select(&BODY_INET))
+            .chain(doc.select(&BODY_TRAVEL))
         {
             let raw_paragraphs = el.select(&P);
             for p in raw_paragraphs {
@@ -198,7 +200,12 @@ impl Scraper for DetikScraper {
                     let p = regex!(r"(<em>|</em>)").replace_all(p.borrow(), "");
                     let p = regex!(r"<br>").replace_all(p.borrow(), "\n");
                     let p = regex!(r"<a.*?>(?P<text>.*?)</a>").replace_all(p.borrow(), "${text}");
+                    let p = regex!(r"<strong>-+</strong>").replace_all(p.borrow(), " ");
                     let p = p.into_owned().trim_start_matches('\n').trim().to_string();
+
+                    if p.starts_with("<strong>Artikel ini telah naik") {
+                        continue;
+                    }
                     if !p.is_empty() {
                         paragraphs.push(p);
                     }

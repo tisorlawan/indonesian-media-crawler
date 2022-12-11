@@ -174,6 +174,49 @@ async fn insert_to_handled(conn: &Object, item: String) {
     .unwrap();
 }
 
+async fn create_warned_table(conn: &Object) {
+    debug!("Initialize warned queue");
+    conn.interact(|conn| {
+        let result = conn.execute(
+            r#"CREATE TABLE warned (
+                   url TEXT PRIMARY KEY
+            )"#,
+            (),
+        );
+        match result {
+            Ok(n) => debug!("Status: {}", n),
+            Err(e) => error!("Error creating warned table: {}", e),
+        };
+    })
+    .await
+    .unwrap();
+}
+
+async fn insert_to_warned(conn: &Object, item: String) {
+    conn.interact(move |conn| {
+        let result = conn.execute("INSERT INTO warned (url) VALUES (?)", (item,));
+        match result {
+            Ok(n) => {}
+            Err(rusqlite::Error::SqliteFailure(e, Some(s))) => if s.contains("UNIQUE") {},
+            Err(e) => error!("Error insert warned item: {}", e),
+        };
+    })
+    .await
+    .unwrap();
+}
+
+async fn delete_from_handled(conn: &Object, item: String) {
+    conn.interact(move |conn| {
+        let result = conn.execute("DELETE FROM handled WHERE url=?", (item,));
+        match result {
+            Ok(n) => {}
+            Err(e) => error!("Error delete queue: {}", e),
+        };
+    })
+    .await
+    .unwrap()
+}
+
 async fn is_handled(conn: &Object, item: String) -> bool {
     conn.interact(|conn| {
         let mut stmt = conn.prepare("SELECT url FROM handled WHERE url=?").unwrap();
@@ -193,7 +236,7 @@ async fn run_scrapper() {
     let pool = cfg.create_pool(Runtime::Tokio1).unwrap();
     let conn = Arc::new(pool.get().await.unwrap());
 
-    let initial_queue = vec!["https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya"];
+    let initial_queue = vec!["https://travel.detik.com/travel-news/d-6454465/kadispar-badung-jamin-wisman-tak-disweeping-imbas-pasal-zina-kuhp"];
 
     if !is_table_exists(&conn, "queue").await {
         create_queue_table(&conn, initial_queue).await;
@@ -205,6 +248,10 @@ async fn run_scrapper() {
 
     if !is_table_exists(&conn, "results").await {
         create_result_table(&conn).await;
+    }
+
+    if !is_table_exists(&conn, "warned").await {
+        create_warned_table(&conn).await;
     }
 
     let queue = get_queue(&conn).await;
@@ -267,8 +314,6 @@ async fn handle(
         result
     };
 
-    delete_from_queue(&conn, url.clone()).await;
-
     match result {
         ScrapingResult::Links(links) => {
             for link in links.iter() {
@@ -279,11 +324,14 @@ async fn handle(
             }
         }
         ScrapingResult::DocumentAndLinks(doc, links) => {
-            for link in links.iter() {
-                insert_to_queue(&conn, link.clone()).await;
-            }
             if doc.paragraphs.is_empty() {
                 warn!("\nEmpty document extracted: {}\n", url);
+                delete_from_handled(&conn, url.clone()).await;
+                insert_to_warned(&conn, url.clone()).await;
+                return;
+            }
+            for link in links.iter() {
+                insert_to_queue(&conn, link.clone()).await;
             }
             insert_result(&conn, url.clone(), doc).await;
             for link in links {
@@ -291,6 +339,8 @@ async fn handle(
             }
         }
     };
+
+    delete_from_queue(&conn, url.clone()).await;
 }
 
 #[tokio::main]
@@ -308,17 +358,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let detik_scrapper = DetikScraper {};
     run_scrapper().await;
 
-    // let detik_scrapper = DetikScraper {};
-    // // let url = "https://sport.detik.com/aboutthegame/detik-insider/d-5746542/para-peracik-bola-mati";
-    // // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
-    // // let url = "https://www.detik.com/hikmah";
-    // // let url = "https://finance.detik.com/berita-ekonomi-bisnis/d-6454399/dirjen-pajak-buka-bukaan-ada-pegawainya-hidup-serumah-tanpa-menikah";
-    // // let url = "https://www.detik.com/";
-    // // let url = "https://inet.detik.com/cyberlife/d-6453192/bos-kripto-yang-bangkrut-ngeles-soal-hobi-beli-rumah-mewah";
-    // // let html = reqwest::get(url).await?.text().await.unwrap();
-    // // println!("{}", html);
+    let detik_scrapper = DetikScraper {};
+    // let url = "https://sport.detik.com/aboutthegame/detik-insider/d-5746542/para-peracik-bola-mati";
+    // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
+    // let url = "https://www.detik.com/hikmah";
+    // let url = "https://finance.detik.com/berita-ekonomi-bisnis/d-6454399/dirjen-pajak-buka-bukaan-ada-pegawainya-hidup-serumah-tanpa-menikah";
+    // let url = "https://www.detik.com/";
+    // let url = "https://travel.detik.com/travel-news/d-6454465/kadispar-badung-jamin-wisman-tak-disweeping-imbas-pasal-zina-kuhp";
+    // let html = reqwest::get(url).await?.text().await.unwrap();
+    // println!("{}", html);
     //
-    // let html = std::fs::read_to_string("tests/htmls/inet.html").expect("Invalid file path");
+    // let html = std::fs::read_to_string("tests/htmls/travel.html").expect("Invalid file path");
     // let doc = Html::parse_document(&html);
     //
     // let result = detik_scrapper.scrap(&doc);
