@@ -18,7 +18,7 @@ use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: Mutex<Option<Instant>> = Mutex::new(None);
-    static ref REQUEST_DELAY: Duration = Duration::from_millis(200);
+    static ref REQUEST_DELAY: Duration = Duration::from_millis(10);
     static ref EXTRACTED: Mutex<u64> = Mutex::new(0);
 }
 
@@ -47,8 +47,10 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     let detik_scrapper = Arc::new(DetikScraper {});
 
-    let mut extracted = EXTRACTED.lock().await;
-    *extracted = p.get_result_count().await? as u64;
+    {
+        let mut extracted = EXTRACTED.lock().await;
+        *extracted = p.get_result_count().await? as u64;
+    }
 
     let p = Arc::new(p);
     while let Some(url) = rx.recv().await {
@@ -106,9 +108,7 @@ async fn handle(
                 persistent.insert_queue(link).await?;
             }
             for link in links {
-                if !persistent.is_visited(link.as_str()).await? {
-                    tx.send(Arc::new(link)).await.unwrap();
-                }
+                tx.send(Arc::new(link)).await.unwrap();
             }
         }
         CrawlerResult::DocumentAndLinks(doc, links) => {
@@ -129,9 +129,7 @@ async fn handle(
                 *num += 1;
 
                 for link in links {
-                    if !persistent.is_visited(link.as_str()).await? {
-                        tx.send(Arc::new(link)).await.unwrap();
-                    }
+                    tx.send(Arc::new(link)).await.unwrap();
                 }
             }
         }
