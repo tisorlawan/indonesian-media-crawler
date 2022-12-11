@@ -12,7 +12,7 @@ use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::new(None);
-    static ref REQUEST_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(500);
+    static ref REQUEST_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(200);
     static ref EXTRACTED: tokio::sync::Mutex<u64> = tokio::sync::Mutex::new(0);
 }
 
@@ -59,7 +59,7 @@ async fn insert_result(conn: &Object, url: String, doc: DetikArticle) {
     *num += 1;
     conn.interact(move |conn| {
         let result = conn.execute("INSERT INTO results (url, title, published_date, description, thumbnail_url, author, keywords, paragraphs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
-            url,
+            &url,
             doc.title,
             doc.published_date,
             doc.description,
@@ -67,7 +67,11 @@ async fn insert_result(conn: &Object, url: String, doc: DetikArticle) {
             doc.author,
             doc.keywords.join("|"),
             doc.paragraphs.join("\n")
-        )).unwrap();
+        ));
+        match result {
+            Ok(_) => {},
+            Err(e) => error!("Insert result error {}: {}", url, e)
+        };
     })
     .await
     .unwrap();
@@ -235,6 +239,8 @@ async fn handle(
     detik_scrapper: Arc<DetikScraper>,
     conn: Arc<Object>,
 ) {
+    insert_to_handled(&conn, url.clone()).await;
+
     let mut last_request_mutex = LAST_REQUEST_MUTEX.lock().await;
     let last_request = last_request_mutex.take();
     let now = Instant::now();
@@ -261,7 +267,6 @@ async fn handle(
         result
     };
 
-    insert_to_handled(&conn, url.clone()).await;
     delete_from_queue(&conn, url.clone()).await;
 
     match result {
@@ -278,7 +283,7 @@ async fn handle(
                 insert_to_queue(&conn, link.clone()).await;
             }
             if doc.paragraphs.is_empty() {
-                warn!("Empty document extracted: {}", url);
+                warn!("\nEmpty document extracted: {}\n", url);
             }
             insert_result(&conn, url.clone(), doc).await;
             for link in links {
