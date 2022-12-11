@@ -5,15 +5,21 @@ use indonesian_news_scraper::scraper::{Scraper, ScrapingResult};
 use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::{
+    sync::{
+        mpsc::{self, Sender},
+        Mutex,
+    },
+    time::Duration,
+};
 use tracing::{debug, error, info, warn};
 use tracing_error::ErrorLayer;
 use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
-    static ref LAST_REQUEST_MUTEX: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::new(None);
-    static ref REQUEST_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(200);
-    static ref EXTRACTED: tokio::sync::Mutex<u64> = tokio::sync::Mutex::new(0);
+    static ref LAST_REQUEST_MUTEX: Mutex<Option<Instant>> = Mutex::new(None);
+    static ref REQUEST_DELAY: Duration = Duration::from_millis(200);
+    static ref EXTRACTED: Mutex<u64> = Mutex::new(0);
 }
 
 async fn is_table_exists(conn: &Object, table_name: &'static str) -> bool {
@@ -358,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let detik_scrapper = DetikScraper {};
     run_scrapper().await;
 
-    let detik_scrapper = DetikScraper {};
+    // let detik_scrapper = DetikScraper {};
     // let url = "https://sport.detik.com/aboutthegame/detik-insider/d-5746542/para-peracik-bola-mati";
     // let url = "https://sport.detik.com/sport-lain/d-6448377/air-mineral-cocok-jadi-teman-begadang-nonton-bola-ini-alasannya";
     // let url = "https://www.detik.com/hikmah";
