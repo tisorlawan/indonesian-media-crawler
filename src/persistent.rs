@@ -262,6 +262,15 @@ impl Persistent {
         Ok(in_progress)
     }
 
+    pub async fn get_result_count(&self) -> Result<u32, CrawlerError> {
+        let query = format!("SELECT COUNT(*) FROM {}", self.queue_table.get_name());
+        let count: u32 = sqlx::query(&query)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get(0)?;
+        Ok(count)
+    }
+
     pub async fn is_visited<S: AsRef<str>>(&self, url: S) -> Result<bool, CrawlerError> {
         let query = format!(
             "SELECT url FROM {} WHERE url = ?",

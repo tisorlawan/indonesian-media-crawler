@@ -47,6 +47,9 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     let detik_scrapper = Arc::new(DetikScraper {});
 
+    let mut extracted = EXTRACTED.lock().await;
+    *extracted = p.get_result_count().await? as u64;
+
     let p = Arc::new(p);
     while let Some(url) = rx.recv().await {
         if p.is_in_progress(url.as_str()).await? {
