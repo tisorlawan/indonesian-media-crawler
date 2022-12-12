@@ -1,7 +1,7 @@
 use crate::{crawler::detik::DetikArticle, error::CrawlerError};
 use chrono::{DateTime, FixedOffset};
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
-use tracing::{debug, info};
+use tracing::debug;
 
 enum Table {
     Queue(String),
@@ -302,6 +302,19 @@ impl Persistent {
         let query = format!(
             "SELECT url FROM {} WHERE url = ?",
             self.in_progress_table.get_name()
+        );
+
+        Ok(sqlx::query(&query)
+            .bind(url.as_ref().trim())
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
+    }
+
+    pub async fn is_in_queue<S: AsRef<str>>(&self, url: S) -> Result<bool, CrawlerError> {
+        let query = format!(
+            "SELECT url FROM {} WHERE url = ?",
+            self.queue_table.get_name()
         );
 
         Ok(sqlx::query(&query)

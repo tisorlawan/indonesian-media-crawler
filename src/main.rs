@@ -15,11 +15,11 @@ use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: Mutex<Option<Instant>> = Mutex::new(None);
-    static ref REQUEST_DELAY: Duration = Duration::from_millis(200);
+    static ref REQUEST_DELAY: Duration = Duration::from_millis(50);
     static ref EXTRACTED_MUTEX: Mutex<u64> = Mutex::new(0);
 }
 
-const MAX_IN_PROGRESS: u32 = 10;
+const MAX_IN_PROGRESS: u32 = 20;
 
 async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), CrawlerError> {
     let p = Arc::new(p);
@@ -65,7 +65,6 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
         loop {
             let in_progress = p_clone.get_in_progress_count().await.unwrap();
             if in_progress < MAX_IN_PROGRESS {
-                debug!("In progress add: {}", MAX_IN_PROGRESS - in_progress);
                 for url in p_clone
                     .get_queue_n(MAX_IN_PROGRESS - in_progress)
                     .await
@@ -138,6 +137,7 @@ async fn handle(
             for link in links {
                 if !persistent.is_visited(link.as_str()).await?
                     && !persistent.is_in_progress(link.as_str()).await?
+                    && !persistent.is_in_queue(link.as_str()).await?
                 {
                     persistent.insert_queue(link.as_str()).await?;
                 }
@@ -153,12 +153,13 @@ async fn handle(
                 persistent.insert_visited(url.as_ref()).await?;
 
                 let mut num = EXTRACTED_MUTEX.lock().await;
-                info!("[{}] Insert Result", *num + 1);
+                info!("[{}] Insert Result {}", *num + 1, url);
                 *num += 1;
 
                 for link in links {
                     if !persistent.is_visited(link.as_str()).await?
                         && !persistent.is_in_progress(link.as_str()).await?
+                        && !persistent.is_in_queue(link.as_str()).await?
                     {
                         persistent.insert_queue(link.as_str()).await?;
                     }
