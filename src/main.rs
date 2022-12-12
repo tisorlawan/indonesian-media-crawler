@@ -6,10 +6,7 @@ use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::{
-    sync::{
-        mpsc::{self, Sender},
-        Mutex,
-    },
+    sync::{mpsc, Mutex},
     time::Duration,
 };
 use tracing::{debug, info, warn};
@@ -18,48 +15,77 @@ use tracing_subscriber::prelude::*;
 
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: Mutex<Option<Instant>> = Mutex::new(None);
-    static ref REQUEST_DELAY: Duration = Duration::from_millis(10);
-    static ref EXTRACTED: Mutex<u64> = Mutex::new(0);
+    static ref REQUEST_DELAY: Duration = Duration::from_millis(200);
+    static ref EXTRACTED_MUTEX: Mutex<u64> = Mutex::new(0);
 }
 
-async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), CrawlerError> {
-    let current_queue = p.merge_queue_and_in_progress().await?;
+const MAX_IN_PROGRESS: u32 = 10;
 
-    let queue = if current_queue.is_empty() {
+async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), CrawlerError> {
+    let p = Arc::new(p);
+
+    debug!(
+        "Total (in progress, queue) before merge to queue: ({}, {})",
+        p.get_in_progress().await?.len(),
+        p.get_queue().await?.len()
+    );
+
+    p.merge_queue_and_in_progress().await?;
+
+    debug!(
+        "Total (in progress, queue) before merge to queue: ({}, {})",
+        p.get_in_progress().await?.len(),
+        p.get_queue().await?.len()
+    );
+
+    let queue = p.get_queue().await?;
+    let queue = if queue.is_empty() {
         for q in &initial_queue {
             p.insert_queue(q).await?;
         }
         initial_queue
     } else {
-        current_queue
+        queue
     };
 
-    let (tx, mut rx) = mpsc::channel(10);
+    info!("Initial queue length: {}", queue.len());
 
-    info!("Initial Queue Length: {}", queue.len());
-
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        for q in queue {
-            tx_clone.send(Arc::new(q)).await.unwrap();
-        }
-    });
-
+    let (tx, mut rx) = mpsc::channel::<Arc<String>>(10);
     let detik_scrapper = Arc::new(DetikScraper {});
 
     {
-        let mut extracted = EXTRACTED.lock().await;
+        let mut extracted = EXTRACTED_MUTEX.lock().await;
         *extracted = p.get_result_count().await? as u64;
     }
 
-    let p = Arc::new(p);
+    let tx_clone = tx.clone();
+
+    let p_clone = p.clone();
+    tokio::spawn(async move {
+        loop {
+            let in_progress = p_clone.get_in_progress_count().await.unwrap();
+            if in_progress < MAX_IN_PROGRESS {
+                debug!("In progress add: {}", MAX_IN_PROGRESS - in_progress);
+                for url in p_clone
+                    .get_queue_n(MAX_IN_PROGRESS - in_progress)
+                    .await
+                    .unwrap()
+                {
+                    tx_clone.send(Arc::new(url)).await.unwrap();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+    });
+
+    let p = p.clone();
     while let Some(url) = rx.recv().await {
         if p.is_in_progress(url.as_str()).await? {
             p.delete_queue(url.as_ref()).await?;
         } else if p.is_visited(url.as_ref()).await? {
             p.delete_queue(url.as_ref()).await?;
         } else {
-            tokio::spawn(handle(tx.clone(), url, detik_scrapper.clone(), p.clone()));
+            tokio::spawn(handle(url, detik_scrapper.clone(), p.clone()));
         }
     }
 
@@ -67,7 +93,6 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 }
 
 async fn handle(
-    tx: Sender<Arc<String>>,
     url: Arc<String>,
     detik_scrapper: Arc<DetikScraper>,
     persistent: Arc<Persistent>,
@@ -75,25 +100,28 @@ async fn handle(
     persistent.insert_in_progress(url.as_ref()).await?;
     persistent.delete_queue(url.as_ref()).await?;
 
-    let mut last_request_mutex = LAST_REQUEST_MUTEX.lock().await;
-    let last_request = last_request_mutex.take();
-    let now = Instant::now();
-    if let Some(last_request) = last_request {
-        let duration = now.duration_since(last_request);
-        if duration < *REQUEST_DELAY {
-            tokio::time::sleep(*REQUEST_DELAY - duration).await;
+    let html = {
+        let mut last_request_mutex = LAST_REQUEST_MUTEX.lock().await;
+        let last_request = last_request_mutex.take();
+        let now = Instant::now();
+        if let Some(last_request) = last_request {
+            let duration = now.duration_since(last_request);
+            if duration < *REQUEST_DELAY {
+                tokio::time::sleep(*REQUEST_DELAY - duration).await;
+            }
         }
-    }
 
-    debug!("Visit {}", url);
-    let html = reqwest::get::<&str>(url.as_str())
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+        debug!("Visit {}", url);
+        let html = reqwest::get::<&str>(url.as_str())
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
 
-    last_request_mutex.replace(now);
+        last_request_mutex.replace(now);
+        html
+    };
 
     let result = {
         let doc = Html::parse_document(&html);
@@ -108,7 +136,11 @@ async fn handle(
                 persistent.insert_queue(link).await?;
             }
             for link in links {
-                tx.send(Arc::new(link)).await.unwrap();
+                if !persistent.is_visited(link.as_str()).await?
+                    && !persistent.is_in_progress(link.as_str()).await?
+                {
+                    persistent.insert_queue(link.as_str()).await?;
+                }
             }
         }
         CrawlerResult::DocumentAndLinks(doc, links) => {
@@ -120,16 +152,16 @@ async fn handle(
                 persistent.insert_result(url.as_ref(), doc).await?;
                 persistent.insert_visited(url.as_ref()).await?;
 
-                for link in &links {
-                    persistent.insert_queue(link).await?;
-                }
-
-                let mut num = EXTRACTED.lock().await;
+                let mut num = EXTRACTED_MUTEX.lock().await;
                 info!("[{}] Insert Result", *num + 1);
                 *num += 1;
 
                 for link in links {
-                    tx.send(Arc::new(link)).await.unwrap();
+                    if !persistent.is_visited(link.as_str()).await?
+                        && !persistent.is_in_progress(link.as_str()).await?
+                    {
+                        persistent.insert_queue(link.as_str()).await?;
+                    }
                 }
             }
         }
