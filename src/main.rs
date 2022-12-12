@@ -1,7 +1,7 @@
 use indonesian_media_crawler::crawler::detik::DetikScraper;
 use indonesian_media_crawler::crawler::{Crawler, CrawlerResult};
 use indonesian_media_crawler::error::CrawlerError;
-use indonesian_media_crawler::persistent::Persistent;
+use indonesian_media_crawler::persistent::{Persistent, Table};
 use scraper::Html;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,22 +26,22 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     debug!(
         "Total (in progress, queue) before merge to queue: ({}, {})",
-        p.get_in_progress().await?.len(),
+        p.get_running().await?.len(),
         p.get_queue().await?.len()
     );
 
-    p.merge_queue_and_in_progress().await?;
+    p.merge_queue_and_running().await?;
 
     debug!(
         "Total (in progress, queue) before merge to queue: ({}, {})",
-        p.get_in_progress().await?.len(),
+        p.get_running().await?.len(),
         p.get_queue().await?.len()
     );
 
     let queue = p.get_queue().await?;
     let queue = if queue.is_empty() {
         for q in &initial_queue {
-            p.insert_queue(q).await?;
+            p.queued.insert(q).await?;
         }
         initial_queue
     } else {
@@ -55,7 +55,7 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     {
         let mut extracted = EXTRACTED_MUTEX.lock().await;
-        *extracted = p.get_result_count().await? as u64;
+        *extracted = u64::from(p.results.count().await?);
     }
 
     let tx_clone = tx.clone();
@@ -63,7 +63,7 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
     let p_clone = p.clone();
     tokio::spawn(async move {
         loop {
-            let in_progress = p_clone.get_in_progress_count().await.unwrap();
+            let in_progress = p_clone.running.count().await.unwrap();
             if in_progress < MAX_IN_PROGRESS {
                 for url in p_clone
                     .get_queue_n(MAX_IN_PROGRESS - in_progress)
@@ -79,10 +79,10 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
 
     let p = p.clone();
     while let Some(url) = rx.recv().await {
-        if p.is_in_progress(url.as_str()).await? {
-            p.delete_queue(url.as_ref()).await?;
-        } else if p.is_visited(url.as_ref()).await? {
-            p.delete_queue(url.as_ref()).await?;
+        if p.running.is_exist(url.as_str()).await? {
+            p.queued.delete(url.as_str()).await?;
+        } else if p.visited.is_exist(url.as_str()).await? {
+            p.queued.delete(url.as_str()).await?;
         } else {
             tokio::spawn(handle(url, detik_scrapper.clone(), p.clone()));
         }
@@ -96,8 +96,10 @@ async fn handle(
     detik_scrapper: Arc<DetikScraper>,
     persistent: Arc<Persistent>,
 ) -> Result<(), CrawlerError> {
-    persistent.insert_in_progress(url.as_ref()).await?;
-    persistent.delete_queue(url.as_ref()).await?;
+    let url = url.as_str();
+
+    persistent.running.insert(url).await?;
+    persistent.queued.delete(url).await?;
 
     let html = {
         let mut last_request_mutex = LAST_REQUEST_MUTEX.lock().await;
@@ -111,12 +113,7 @@ async fn handle(
         }
 
         debug!("Visit {}", url);
-        let html = reqwest::get::<&str>(url.as_str())
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
+        let html = reqwest::get(url).await.unwrap().text().await.unwrap();
 
         last_request_mutex.replace(now);
         html
@@ -129,17 +126,18 @@ async fn handle(
 
     match result {
         CrawlerResult::Links(links) => {
-            persistent.insert_visited(url.as_ref()).await?;
+            persistent.visited.insert(url).await?;
 
             for link in &links {
-                persistent.insert_queue(link).await?;
+                persistent.queued.insert(link).await?;
             }
             for link in links {
-                if !persistent.is_visited(link.as_str()).await?
-                    && !persistent.is_in_progress(link.as_str()).await?
-                    && !persistent.is_in_queue(link.as_str()).await?
+                let link = link.as_str();
+                if !persistent.visited.is_exist(link).await?
+                    && !persistent.running.is_exist(link).await?
+                    && !persistent.queued.is_exist(link).await?
                 {
-                    persistent.insert_queue(link.as_str()).await?;
+                    persistent.queued.insert(link).await?;
                 }
             }
         }
@@ -147,28 +145,29 @@ async fn handle(
             if doc.paragraphs.is_empty() {
                 warn!("\nEmpty document extracted: {}\n", url);
                 // We dont insert to visited if there is warning
-                persistent.insert_warned(url.as_ref()).await?;
+                persistent.warned.insert(url).await?;
             } else {
-                persistent.insert_result(url.as_ref(), doc).await?;
-                persistent.insert_visited(url.as_ref()).await?;
+                persistent.results.insert((url, doc)).await?;
+                persistent.visited.insert(url).await?;
 
                 let mut num = EXTRACTED_MUTEX.lock().await;
                 info!("[{}] Insert Result {}", *num + 1, url);
                 *num += 1;
 
                 for link in links {
-                    if !persistent.is_visited(link.as_str()).await?
-                        && !persistent.is_in_progress(link.as_str()).await?
-                        && !persistent.is_in_queue(link.as_str()).await?
+                    let link = link.as_str();
+                    if !persistent.visited.is_exist(link).await?
+                        && !persistent.running.is_exist(link).await?
+                        && !persistent.queued.is_exist(link).await?
                     {
-                        persistent.insert_queue(link.as_str()).await?;
+                        persistent.queued.insert(link).await?;
                     }
                 }
             }
         }
     };
 
-    persistent.delete_in_progress(url.as_ref()).await?;
+    persistent.running.delete(url).await?;
     Ok(())
 }
 
@@ -185,8 +184,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let p = Persistent::new("detik").await?;
-    let initial_queue = vec!["https://travel.detik.com/travel-news/d-6454465/kadispar-badung-jamin-wisman-tak-disweeping-imbas-pasal-zina-kuhp".to_string()];
 
+    let initial_queue = vec!["https://travel.detik.com/travel-news/d-6454465/kadispar-badung-jamin-wisman-tak-disweeping-imbas-pasal-zina-kuhp".to_string()];
     run_scrapper(p, initial_queue).await?;
 
     // let detik_scrapper = DetikScraper {};

@@ -233,7 +233,7 @@ impl Crawler for DetikScraper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scraper::Crawler;
+    use crate::crawler::Crawler;
     use pretty_assertions::assert_eq;
     use scraper::html::Html;
     use std::fs;
