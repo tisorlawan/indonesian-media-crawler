@@ -225,7 +225,7 @@ impl Persistent {
         self.delete_by_url(url, &self.warned_table).await
     }
 
-    pub async fn merge_queue_and_in_progress(&self) -> Result<Vec<String>, CrawlerError> {
+    pub async fn get_queue(&self) -> Result<Vec<String>, CrawlerError> {
         let mut urls: Vec<String> = vec![];
 
         // Get queue
@@ -234,32 +234,46 @@ impl Persistent {
             urls.push(row.try_get("url")?);
         }
 
-        // Get In Progress
-        let in_progress = self.get_in_progress().await?;
-
-        info!("Queued: {}", urls.len());
-        info!("In Progress: {}", in_progress.len());
-
-        // Delete in progress and add it to queued
-        for i in in_progress {
-            self.insert_queue(i.as_str()).await?;
-            self.delete_in_progress(i.as_str()).await?;
-            urls.push(i);
-        }
-
-        let in_progress = self.get_in_progress().await?;
-        debug!("In Progress after merge: {}", in_progress.len());
-
         Ok(urls)
     }
 
-    async fn get_in_progress(&self) -> Result<Vec<String>, CrawlerError> {
+    pub async fn merge_queue_and_in_progress(&self) -> Result<(), CrawlerError> {
+        let in_progress = self.get_in_progress().await?;
+        for i in in_progress {
+            self.insert_queue(i.as_str()).await?;
+            self.delete_in_progress(i.as_str()).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_in_progress(&self) -> Result<Vec<String>, CrawlerError> {
         let mut in_progress: Vec<String> = vec![];
         let query = format!("SELECT url FROM {}", self.in_progress_table.get_name());
         for row in sqlx::query(&query).fetch_all(&self.pool).await? {
             in_progress.push(row.try_get("url")?);
         }
         Ok(in_progress)
+    }
+
+    pub async fn get_queue_n(&self, n: u32) -> Result<Vec<String>, CrawlerError> {
+        let mut in_progress: Vec<String> = vec![];
+        let query = format!(
+            "SELECT url FROM {} ORDER BY created_at LIMIT ?",
+            self.queue_table.get_name()
+        );
+        for row in sqlx::query(&query).bind(n).fetch_all(&self.pool).await? {
+            in_progress.push(row.try_get("url")?);
+        }
+        Ok(in_progress)
+    }
+
+    pub async fn get_in_progress_count(&self) -> Result<u32, CrawlerError> {
+        let query = format!("SELECT COUNT(*) FROM {}", self.in_progress_table.get_name());
+        Ok(sqlx::query(&query)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get(0)?)
     }
 
     pub async fn get_result_count(&self) -> Result<u32, CrawlerError> {
