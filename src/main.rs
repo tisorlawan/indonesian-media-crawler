@@ -128,9 +128,6 @@ async fn handle(
         CrawlerResult::Links(links) => {
             persistent.visited.insert(url).await?;
 
-            for link in &links {
-                persistent.queued.insert(link).await?;
-            }
             for link in links {
                 let link = link.as_str();
                 if !persistent.visited.is_exist(link).await?
