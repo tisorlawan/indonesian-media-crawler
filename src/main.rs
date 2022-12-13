@@ -16,7 +16,7 @@ use tracing_subscriber::prelude::*;
 lazy_static::lazy_static! {
     static ref LAST_REQUEST_MUTEX: Mutex<Option<Instant>> = Mutex::new(None);
     static ref REQUEST_DELAY: Duration = Duration::from_millis(50);
-    static ref EXTRACTED_MUTEX: Mutex<u64> = Mutex::new(0);
+    static ref EXTRACTED_MUTEX: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
 }
 
 const MAX_IN_PROGRESS: u32 = 20;
@@ -54,7 +54,7 @@ async fn run_scrapper(p: Persistent, initial_queue: Vec<String>) -> Result<(), C
     let detik_scrapper = Arc::new(DetikScraper {});
 
     {
-        let mut extracted = EXTRACTED_MUTEX.lock().await;
+        let mut extracted = EXTRACTED_MUTEX.lock().unwrap();
         *extracted = u64::from(p.results.count().await?);
     }
 
@@ -147,9 +147,11 @@ async fn handle(
                 persistent.results.insert((url, doc)).await?;
                 persistent.visited.insert(url).await?;
 
-                let mut num = EXTRACTED_MUTEX.lock().await;
-                info!("[{}] Insert Result {}", *num + 1, url);
-                *num += 1;
+                {
+                    let mut num = EXTRACTED_MUTEX.lock().unwrap();
+                    info!("[{}] Insert Result {}", *num + 1, url);
+                    *num += 1;
+                }
 
                 for link in links {
                     let link = link.as_str();

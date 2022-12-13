@@ -64,12 +64,10 @@ impl Table for UrlTable {
     async fn create(&self) -> Result<(), sqlx::Error> {
         if !db_utils::is_table_exists(self.get_pool(), &self.name).await? {
             let query = format!(
-                r#"
-                    CREATE TABLE {} (
-                        id TEXT PRIMARY KEY,
-                        created_at DATETIME
-                    )
-                    "#,
+                "CREATE TABLE {} (
+                    id TEXT PRIMARY KEY,
+                    created_at DATETIME
+                 )",
                 &self.name
             );
             sqlx::query(query.as_str()).execute(self.get_pool()).await?;
@@ -286,6 +284,36 @@ mod tests {
     use std::path::Path;
     use tokio::fs;
 
+    macro_rules! insert {
+        ($it:expr, $($added:expr),+) => {
+            $(
+                $it.insert($added).await.unwrap();
+            )+
+        };
+    }
+
+    macro_rules! delete {
+        ($it:expr, $($deleted:expr),+) => {
+            $(
+                $it.delete($deleted).await.unwrap();
+            )+
+        }
+    }
+
+    macro_rules! assert_eq_fut_strings {
+        ($fut:expr, $($item:expr),+) => {
+            let mut v = Vec::new();
+            $(
+                v.push($item.to_string());
+            )+
+            assert_eq!($fut.await.unwrap(), v);
+        };
+        ($fut:expr) => {
+            let v: Vec<String> = vec![];
+            assert_eq!($fut.await.unwrap(), v);
+        }
+    }
+
     #[tokio::test]
     async fn create_new_file() {
         if Path::new("test.db").is_file() {
@@ -309,37 +337,37 @@ mod tests {
 
         assert_eq!(p.visited.count().await.unwrap(), 0);
         assert!(!p.visited.is_exist("visited").await.unwrap());
-        p.visited.insert("visited").await.unwrap();
+        insert!(p.visited, "visited");
         assert_eq!(p.visited.count().await.unwrap(), 1);
         assert!(p.visited.is_exist("visited").await.unwrap());
-        p.visited.delete("visited").await.unwrap();
+        delete!(p.visited, "visited");
         assert_eq!(p.visited.count().await.unwrap(), 0);
         assert!(!p.visited.is_exist("visited").await.unwrap());
 
         assert_eq!(p.queued.count().await.unwrap(), 0);
         assert!(!p.queued.is_exist("queued").await.unwrap());
-        p.queued.insert("queued").await.unwrap();
+        insert!(p.queued, "queued");
         assert_eq!(p.queued.count().await.unwrap(), 1);
         assert!(p.queued.is_exist("queued").await.unwrap());
-        p.queued.delete("queued").await.unwrap();
+        delete!(p.queued, "queued");
         assert_eq!(p.queued.count().await.unwrap(), 0);
         assert!(!p.queued.is_exist("queued").await.unwrap());
 
         assert_eq!(p.running.count().await.unwrap(), 0);
         assert!(!p.running.is_exist("running").await.unwrap());
-        p.running.insert("running").await.unwrap();
+        insert!(p.running, "running");
         assert_eq!(p.running.count().await.unwrap(), 1);
         assert!(p.running.is_exist("running").await.unwrap());
-        p.running.delete("running").await.unwrap();
+        delete!(p.running, "running");
         assert_eq!(p.running.count().await.unwrap(), 0);
         assert!(!p.running.is_exist("running").await.unwrap());
 
         assert_eq!(p.warned.count().await.unwrap(), 0);
         assert!(!p.warned.is_exist("warned").await.unwrap());
-        p.warned.insert("warned").await.unwrap();
+        insert!(p.warned, "warned");
         assert_eq!(p.warned.count().await.unwrap(), 1);
         assert!(p.warned.is_exist("warned").await.unwrap());
-        p.warned.delete("warned").await.unwrap();
+        delete!(p.warned, "warned");
         assert_eq!(p.warned.count().await.unwrap(), 0);
         assert!(!p.warned.is_exist("warned").await.unwrap());
 
@@ -355,10 +383,10 @@ mod tests {
 
         assert_eq!(p.results.count().await.unwrap(), 0);
         assert!(!p.results.is_exist("results").await.unwrap());
-        p.results.insert(("results", d)).await.unwrap();
+        insert!(p.results, ("results", d));
         assert_eq!(p.results.count().await.unwrap(), 1);
         assert!(p.results.is_exist("results").await.unwrap());
-        p.results.delete("results").await.unwrap();
+        delete!(p.results, "results");
         assert_eq!(p.results.count().await.unwrap(), 0);
         assert!(!p.results.is_exist("results").await.unwrap());
 
@@ -375,45 +403,27 @@ mod tests {
         let queue: Vec<String> = vec![];
         assert_eq!(p.get_queue().await.unwrap(), queue);
 
-        p.queued.insert("1").await.unwrap();
-        p.queued.insert("2").await.unwrap();
-        p.queued.insert("3").await.unwrap();
-        let queue: Vec<String> = vec!["1", "2", "3"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
+        insert!(p.queued, "1", "2", "3");
         assert_eq!(p.queued.count().await.unwrap(), 3);
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        assert_eq_fut_strings!(p.get_queue(), "1", "2", "3");
 
-        p.queued.delete("2").await.unwrap();
-        let queue: Vec<String> = vec!["1", "3"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        delete!(p.queued, "2");
+        assert_eq_fut_strings!(p.get_queue(), "1", "3");
 
-        p.queued.delete("1").await.unwrap();
-        let queue: Vec<String> = vec!["3"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        delete!(p.queued, "1");
+        assert_eq_fut_strings!(p.get_queue(), "3");
 
-        p.queued.insert("1").await.unwrap();
-        let queue: Vec<String> = vec!["3", "1"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        insert!(p.queued, "1");
+        assert_eq_fut_strings!(p.get_queue(), "3", "1");
 
-        p.queued.delete("3").await.unwrap();
-        let queue: Vec<String> = vec!["1"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        delete!(p.queued, "3");
+        assert_eq_fut_strings!(p.get_queue(), "1");
 
-        p.queued.delete("2").await.unwrap();
-        let queue: Vec<String> = vec!["1"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        delete!(p.queued, "2");
+        assert_eq_fut_strings!(p.get_queue(), "1");
 
-        p.queued.delete("1").await.unwrap();
-        let queue: Vec<String> = vec![];
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        delete!(p.queued, "1");
+        assert_eq_fut_strings!(p.get_queue());
 
         fs::remove_file("test3.db").await.unwrap();
     }
@@ -425,17 +435,8 @@ mod tests {
         }
         let p = Persistent::new("test4").await.unwrap();
 
-        p.queued.insert("1").await.unwrap();
-        p.queued.insert("2").await.unwrap();
-        p.queued.insert("3").await.unwrap();
-        p.queued.insert("4").await.unwrap();
-        p.queued.insert("5").await.unwrap();
-
-        let queue_2: Vec<String> = vec!["1", "2"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_queue_n(2).await.unwrap(), queue_2);
+        insert!(p.queued, "1", "2", "3", "4", "5");
+        assert_eq_fut_strings!(p.get_queue_n(2), "1", "2");
 
         fs::remove_file("test4.db").await.unwrap();
     }
@@ -450,45 +451,27 @@ mod tests {
         let running: Vec<String> = vec![];
         assert_eq!(p.get_running().await.unwrap(), running);
 
-        p.running.insert("1").await.unwrap();
-        p.running.insert("2").await.unwrap();
-        p.running.insert("3").await.unwrap();
-        let running: Vec<String> = vec!["1", "2", "3"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
+        insert!(p.running, "1", "2", "3");
         assert_eq!(p.running.count().await.unwrap(), 3);
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "1", "2", "3");
 
         p.running.delete("2").await.unwrap();
-        let running: Vec<String> = vec!["1", "3"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "1", "3");
 
         p.running.delete("1").await.unwrap();
-        let running: Vec<String> = vec!["3"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "3");
 
         p.running.insert("1").await.unwrap();
-        let running: Vec<String> = vec!["3", "1"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "3", "1");
 
         p.running.delete("3").await.unwrap();
-        let running: Vec<String> = vec!["1"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "1");
 
         p.running.delete("2").await.unwrap();
-        let running: Vec<String> = vec!["1"].into_iter().map(ToString::to_string).collect();
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running(), "1");
 
         p.running.delete("1").await.unwrap();
-        let running: Vec<String> = vec![];
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_running());
 
         fs::remove_file("test5.db").await.unwrap();
     }
@@ -500,22 +483,12 @@ mod tests {
         }
         let p = Persistent::new("test6").await.unwrap();
 
-        p.queued.insert("1").await.unwrap();
-        p.queued.insert("2").await.unwrap();
-        p.queued.insert("3").await.unwrap();
-        p.running.insert("4").await.unwrap();
-        p.running.insert("5").await.unwrap();
-
+        insert!(p.queued, "1", "2", "3");
+        insert!(p.running, "4", "5");
         p.merge_queue_and_running().await.unwrap();
 
-        let queue: Vec<String> = vec!["1", "2", "3", "4", "5"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(p.get_queue().await.unwrap(), queue);
-
-        let running: Vec<String> = vec![];
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq_fut_strings!(p.get_queue(), "1", "2", "3", "4", "5");
+        assert_eq_fut_strings!(p.get_running());
 
         fs::remove_file("test6.db").await.unwrap();
     }
