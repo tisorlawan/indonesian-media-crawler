@@ -1,3 +1,4 @@
+use chrono::{DateTime, FixedOffset};
 use sqlx::SqlitePool;
 
 pub(crate) async fn is_table_exists(
@@ -11,4 +12,11 @@ pub(crate) async fn is_table_exists(
             .await?
             .is_some(),
     )
+}
+
+pub(crate) fn get_now() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(
+        &chrono::offset::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
+    .unwrap()
 }

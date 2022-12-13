@@ -1,48 +1,6 @@
-use crate::db_utils;
-use crate::{crawler::detik::DetikArticle, error::CrawlerError};
-use chrono::{DateTime, FixedOffset};
+use super::DetikArticle;
+use crate::{utils, CrawlerError, Storage, Table};
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
-use std::fmt::Display;
-
-#[async_trait::async_trait]
-pub trait Table {
-    type Record<'a>;
-
-    fn get_name(&self) -> &str;
-    fn get_pool(&self) -> &SqlitePool;
-
-    async fn create(&self) -> Result<(), sqlx::Error>;
-    async fn insert<'a>(&self, record: Self::Record<'a>) -> Result<(), sqlx::Error>;
-
-    async fn is_exist<I: AsRef<str> + Display + Send + Sync>(
-        &self,
-        id: I,
-    ) -> Result<bool, sqlx::Error> {
-        let query = format!("SELECT id FROM {} WHERE id = ?", self.get_name());
-        Ok(sqlx::query(&query)
-            .bind(id.as_ref())
-            .fetch_optional(self.get_pool())
-            .await?
-            .is_some())
-    }
-
-    async fn delete<I: AsRef<str> + Send + Sync>(&self, id: I) -> Result<(), sqlx::Error> {
-        let query = format!(r#"DELETE FROM {} WHERE id = ?"#, self.get_name());
-        sqlx::query(&query)
-            .bind(id.as_ref())
-            .execute(self.get_pool())
-            .await?;
-        Ok(())
-    }
-
-    async fn count(&self) -> Result<u32, CrawlerError> {
-        let query = format!("SELECT COUNT(*) FROM {}", self.get_name());
-        Ok(sqlx::query(&query)
-            .fetch_one(self.get_pool())
-            .await?
-            .try_get(0)?)
-    }
-}
 
 pub struct UrlTable {
     name: String,
@@ -51,7 +9,7 @@ pub struct UrlTable {
 
 #[async_trait::async_trait]
 impl Table for UrlTable {
-    type Record<'a> = &'a str where Self: 'a;
+    type Record<'a> = &'a str;
 
     fn get_name(&self) -> &str {
         self.name.as_str()
@@ -62,7 +20,7 @@ impl Table for UrlTable {
     }
 
     async fn create(&self) -> Result<(), sqlx::Error> {
-        if !db_utils::is_table_exists(self.get_pool(), &self.name).await? {
+        if !utils::is_table_exists(self.get_pool(), &self.name).await? {
             let query = format!(
                 "CREATE TABLE {} (
                     id TEXT PRIMARY KEY,
@@ -76,7 +34,7 @@ impl Table for UrlTable {
     }
 
     async fn insert<'a>(&self, record: Self::Record<'a>) -> Result<(), sqlx::Error> {
-        let timestamp = get_now();
+        let timestamp = utils::get_now();
         let mut tx = self.get_pool().begin().await?;
         let query = format!(
             "INSERT OR IGNORE INTO {} (id, created_at) VALUES (?, ?)",
@@ -92,13 +50,13 @@ impl Table for UrlTable {
     }
 }
 
-pub struct ArticleTable {
+pub struct DetikArticleTable {
     name: String,
     pool: SqlitePool,
 }
 
 #[async_trait::async_trait]
-impl Table for ArticleTable {
+impl Table for DetikArticleTable {
     type Record<'a> = (&'a str, DetikArticle);
 
     fn get_name(&self) -> &str {
@@ -110,7 +68,7 @@ impl Table for ArticleTable {
     }
 
     async fn create(&self) -> Result<(), sqlx::Error> {
-        if !db_utils::is_table_exists(self.get_pool(), &self.name).await? {
+        if !utils::is_table_exists(self.get_pool(), &self.name).await? {
             let query = format!(
                 r#"
                         CREATE TABLE {} (
@@ -132,7 +90,7 @@ impl Table for ArticleTable {
         Ok(())
     }
 
-    async fn insert<'a>(&self, (url, doc): Self::Record<'a>) -> Result<(), sqlx::Error> {
+    async fn insert<'a>(&self, (url, record): Self::Record<'a>) -> Result<(), sqlx::Error> {
         let mut tx = self.get_pool().begin().await?;
         let query = format!(
             r#"INSERT OR IGNORE INTO {} (
@@ -149,14 +107,14 @@ impl Table for ArticleTable {
         );
         sqlx::query(&query)
             .bind(url.trim())
-            .bind(doc.title)
-            .bind(doc.published_date)
-            .bind(doc.description)
-            .bind(doc.thumbnail_url)
-            .bind(doc.author)
-            .bind(doc.keywords.join("|"))
-            .bind(doc.paragraphs.join("\n"))
-            .bind(get_now())
+            .bind(record.title)
+            .bind(record.published_date)
+            .bind(record.description)
+            .bind(record.thumbnail_url)
+            .bind(record.author)
+            .bind(record.keywords.join("|"))
+            .bind(record.paragraphs.join("\n"))
+            .bind(utils::get_now())
             .execute(&mut tx)
             .await?;
         tx.commit().await?;
@@ -164,23 +122,23 @@ impl Table for ArticleTable {
     }
 }
 
-pub struct Persistent {
+pub struct DetikData {
     pub name: String,
     pub queued: UrlTable,
     pub visited: UrlTable,
     pub warned: UrlTable,
-    pub results: ArticleTable,
+    pub results: DetikArticleTable,
     pub running: UrlTable,
     pool: SqlitePool,
 }
 
-impl Persistent {
-    pub async fn new(name: &str) -> Result<Persistent, CrawlerError> {
+impl DetikData {
+    pub async fn new(name: &str) -> Result<DetikData, CrawlerError> {
         let opt = SqliteConnectOptions::new()
             .filename(format!("{}.db", name))
             .create_if_missing(true);
         let pool = SqlitePool::connect_with(opt).await?;
-        let p = Persistent {
+        let p = DetikData {
             name: name.to_string(),
             queued: UrlTable {
                 name: format!("{}_queued", name),
@@ -198,7 +156,7 @@ impl Persistent {
                 name: format!("{}_warned", name),
                 pool: pool.clone(),
             },
-            results: ArticleTable {
+            results: DetikArticleTable {
                 name: format!("{}_results", name),
                 pool: pool.clone(),
             },
@@ -206,14 +164,14 @@ impl Persistent {
         };
 
         for table in &[&p.queued, &p.running, &p.visited, &p.warned] {
-            if !db_utils::is_table_exists(&p.pool, &table.name).await? {
+            if !utils::is_table_exists(&p.pool, &table.name).await? {
                 tracing::debug!("Crate table {}", table.name);
                 table.create().await?;
             } else {
                 tracing::debug!("Use table {}", table.name);
             }
         }
-        if !db_utils::is_table_exists(&p.pool, &p.results.name).await? {
+        if !utils::is_table_exists(&p.pool, &p.results.name).await? {
             tracing::debug!("Crate table {}", p.results.name);
             p.results.create().await?;
         } else {
@@ -222,8 +180,13 @@ impl Persistent {
 
         Ok(p)
     }
+}
 
-    pub async fn get_queue(&self) -> Result<Vec<String>, CrawlerError> {
+#[async_trait::async_trait]
+impl Storage for DetikData {
+    type Record = DetikArticle;
+
+    async fn queued_get(&self) -> Result<Vec<String>, CrawlerError> {
         let mut urls: Vec<String> = vec![];
 
         // Get queue
@@ -235,19 +198,7 @@ impl Persistent {
         Ok(urls)
     }
 
-    pub async fn get_running(&self) -> Result<Vec<String>, CrawlerError> {
-        let mut in_progress: Vec<String> = vec![];
-        let query = format!(
-            "SELECT id FROM {} ORDER BY created_at",
-            self.running.get_name()
-        );
-        for row in sqlx::query(&query).fetch_all(&self.pool).await? {
-            in_progress.push(row.try_get("id")?);
-        }
-        Ok(in_progress)
-    }
-
-    pub async fn get_queue_n(&self, n: u32) -> Result<Vec<String>, CrawlerError> {
+    async fn queued_get_n(&self, n: u32) -> Result<Vec<String>, CrawlerError> {
         let mut in_progress: Vec<String> = vec![];
         let query = format!(
             "SELECT id FROM {} ORDER BY created_at LIMIT ?",
@@ -259,28 +210,90 @@ impl Persistent {
         Ok(in_progress)
     }
 
-    pub async fn merge_queue_and_running(&self) -> Result<(), CrawlerError> {
-        let in_progress = self.get_running().await?;
-        for i in in_progress {
-            self.queued.insert(i.as_str()).await?;
-            self.running.delete(i.as_str()).await?;
-        }
-        Ok(())
+    async fn queued_insert<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.queued.insert(item).await?)
     }
-}
 
-fn get_now() -> DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(
-        &chrono::offset::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-    )
-    .unwrap()
+    async fn queued_delete<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.queued.delete(item).await?)
+    }
+
+    async fn queued_is_exists<I: AsRef<str> + Send>(&self, item: I) -> Result<bool, CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.queued.is_exist(item).await?)
+    }
+
+    async fn running_get(&self) -> Result<Vec<String>, CrawlerError> {
+        let mut in_progress: Vec<String> = vec![];
+        let query = format!(
+            "SELECT id FROM {} ORDER BY created_at",
+            self.running.get_name()
+        );
+        for row in sqlx::query(&query).fetch_all(&self.pool).await? {
+            in_progress.push(row.try_get("id")?);
+        }
+        Ok(in_progress)
+    }
+
+    async fn running_insert<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.running.insert(item.as_ref()).await?)
+    }
+
+    async fn running_delete<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.running.delete(item).await?)
+    }
+
+    async fn running_count(&self) -> Result<u32, CrawlerError> {
+        Ok(self.running.count().await?)
+    }
+
+    async fn running_is_exists<I: AsRef<str> + Send>(&self, item: I) -> Result<bool, CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.running.is_exist(item).await?)
+    }
+
+    async fn visited_delete<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.visited.delete(item).await?)
+    }
+
+    async fn visited_is_exists<I: AsRef<str> + Send>(&self, item: I) -> Result<bool, CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.visited.is_exist(item).await?)
+    }
+
+    async fn visited_insert<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.visited.insert(item).await?)
+    }
+
+    async fn results_count(&self) -> Result<u32, CrawlerError> {
+        Ok(self.results.count().await?)
+    }
+
+    async fn results_insert<I: AsRef<str> + Send>(
+        &self,
+        (url, record): (I, Self::Record),
+    ) -> Result<(), CrawlerError> {
+        let url = url.as_ref();
+        Ok(self.results.insert((url, record)).await?)
+    }
+
+    async fn warned_insert<I: AsRef<str> + Send>(&self, item: I) -> Result<(), CrawlerError> {
+        let item = item.as_ref();
+        Ok(self.warned.insert(item).await?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::DetikArticle;
     use super::*;
-    use crate::crawler::detik::DetikArticle;
-    use pretty_assertions::assert_eq;
+    use crate::utils::get_now;
     use std::path::Path;
     use tokio::fs;
 
@@ -321,7 +334,7 @@ mod tests {
         }
 
         assert!(!Path::new("test.db").is_file());
-        Persistent::new("test").await.unwrap();
+        DetikData::new("test").await.unwrap();
         assert!(Path::new("test.db").is_file());
 
         fs::remove_file("test.db").await.unwrap();
@@ -333,7 +346,7 @@ mod tests {
             fs::remove_file("test2.db").await.unwrap();
         }
 
-        let p = Persistent::new("test2").await.unwrap();
+        let p = DetikData::new("test2").await.unwrap();
 
         assert_eq!(p.visited.count().await.unwrap(), 0);
         assert!(!p.visited.is_exist("visited").await.unwrap());
@@ -399,44 +412,44 @@ mod tests {
             fs::remove_file("test3.db").await.unwrap();
         }
 
-        let p = Persistent::new("test3").await.unwrap();
+        let p = DetikData::new("test3").await.unwrap();
         let queue: Vec<String> = vec![];
-        assert_eq!(p.get_queue().await.unwrap(), queue);
+        assert_eq!(p.queued_get().await.unwrap(), queue);
 
         insert!(p.queued, "1", "2", "3");
         assert_eq!(p.queued.count().await.unwrap(), 3);
-        assert_eq_fut_strings!(p.get_queue(), "1", "2", "3");
+        assert_eq_fut_strings!(p.queued_get(), "1", "2", "3");
 
         delete!(p.queued, "2");
-        assert_eq_fut_strings!(p.get_queue(), "1", "3");
+        assert_eq_fut_strings!(p.queued_get(), "1", "3");
 
         delete!(p.queued, "1");
-        assert_eq_fut_strings!(p.get_queue(), "3");
+        assert_eq_fut_strings!(p.queued_get(), "3");
 
         insert!(p.queued, "1");
-        assert_eq_fut_strings!(p.get_queue(), "3", "1");
+        assert_eq_fut_strings!(p.queued_get(), "3", "1");
 
         delete!(p.queued, "3");
-        assert_eq_fut_strings!(p.get_queue(), "1");
+        assert_eq_fut_strings!(p.queued_get(), "1");
 
         delete!(p.queued, "2");
-        assert_eq_fut_strings!(p.get_queue(), "1");
+        assert_eq_fut_strings!(p.queued_get(), "1");
 
         delete!(p.queued, "1");
-        assert_eq_fut_strings!(p.get_queue());
+        assert_eq_fut_strings!(p.queued_get());
 
         fs::remove_file("test3.db").await.unwrap();
     }
 
     #[tokio::test]
-    async fn get_queue_n() {
+    async fn queued_get_n() {
         if Path::new("test4.db").is_file() {
             fs::remove_file("test4.db").await.unwrap();
         }
-        let p = Persistent::new("test4").await.unwrap();
+        let p = DetikData::new("test4").await.unwrap();
 
         insert!(p.queued, "1", "2", "3", "4", "5");
-        assert_eq_fut_strings!(p.get_queue_n(2), "1", "2");
+        assert_eq_fut_strings!(p.queued_get_n(2), "1", "2");
 
         fs::remove_file("test4.db").await.unwrap();
     }
@@ -446,32 +459,32 @@ mod tests {
         if Path::new("test5.db").is_file() {
             fs::remove_file("test5.db").await.unwrap();
         }
-        let p = Persistent::new("test5").await.unwrap();
+        let p = DetikData::new("test5").await.unwrap();
 
         let running: Vec<String> = vec![];
-        assert_eq!(p.get_running().await.unwrap(), running);
+        assert_eq!(p.running_get().await.unwrap(), running);
 
         insert!(p.running, "1", "2", "3");
         assert_eq!(p.running.count().await.unwrap(), 3);
-        assert_eq_fut_strings!(p.get_running(), "1", "2", "3");
+        assert_eq_fut_strings!(p.running_get(), "1", "2", "3");
 
         p.running.delete("2").await.unwrap();
-        assert_eq_fut_strings!(p.get_running(), "1", "3");
+        assert_eq_fut_strings!(p.running_get(), "1", "3");
 
         p.running.delete("1").await.unwrap();
-        assert_eq_fut_strings!(p.get_running(), "3");
+        assert_eq_fut_strings!(p.running_get(), "3");
 
         p.running.insert("1").await.unwrap();
-        assert_eq_fut_strings!(p.get_running(), "3", "1");
+        assert_eq_fut_strings!(p.running_get(), "3", "1");
 
         p.running.delete("3").await.unwrap();
-        assert_eq_fut_strings!(p.get_running(), "1");
+        assert_eq_fut_strings!(p.running_get(), "1");
 
         p.running.delete("2").await.unwrap();
-        assert_eq_fut_strings!(p.get_running(), "1");
+        assert_eq_fut_strings!(p.running_get(), "1");
 
         p.running.delete("1").await.unwrap();
-        assert_eq_fut_strings!(p.get_running());
+        assert_eq_fut_strings!(p.running_get());
 
         fs::remove_file("test5.db").await.unwrap();
     }
@@ -481,14 +494,14 @@ mod tests {
         if Path::new("test6.db").is_file() {
             fs::remove_file("test6.db").await.unwrap();
         }
-        let p = Persistent::new("test6").await.unwrap();
+        let p = DetikData::new("test6").await.unwrap();
 
         insert!(p.queued, "1", "2", "3");
         insert!(p.running, "4", "5");
         p.merge_queue_and_running().await.unwrap();
 
-        assert_eq_fut_strings!(p.get_queue(), "1", "2", "3", "4", "5");
-        assert_eq_fut_strings!(p.get_running());
+        assert_eq_fut_strings!(p.queued_get(), "1", "2", "3", "4", "5");
+        assert_eq_fut_strings!(p.running_get());
 
         fs::remove_file("test6.db").await.unwrap();
     }
